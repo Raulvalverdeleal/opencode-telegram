@@ -231,7 +231,6 @@ bot.command('help', async ctx => {
 			'/sessions <filtro_opcional> — sesiones filtradas por nombre',
 			'/switch <session_id> — cambiar sesión activa',
 			'/delete <session_id> — eliminar sesión',
-			'/restart — reiniciar bot de Telegram',
 			'/fingerprint — obtener fingerprint de autorización',
 			'/help — mostrar esta ayuda',
 		].join('\n'),
@@ -247,12 +246,6 @@ bot.command('stop', async ctx => {
 		return;
 	}
 	await ctx.reply('Ejecución detenida.');
-});
-
-bot.command('restart', async ctx => {
-	if (!(await authService.authorizeRequest(ctx))) return;
-	await ctx.reply('Reiniciando...');
-	setTimeout(() => process.exit(0), 500);
 });
 
 bot.command('fingerprint', async ctx => {

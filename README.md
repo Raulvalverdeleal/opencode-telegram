@@ -86,7 +86,6 @@ To find your fingerprint, set `["*"]` and send `/fingerprint` to the bot. Then s
 - `/switch <session_id>` — switch active session
 - `/<session_id>` — shortcut to switch session (e.g. `/ses_abc123`)
 - `/delete <session_id>` — delete a session
-- `/restart` — exit the bot process (use your process manager or shell to restart it)
 - `/fingerprint` — show your Telegram user ID for allowlist setup
 - `/help` — show command list
 
