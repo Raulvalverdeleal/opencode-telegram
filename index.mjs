@@ -77,6 +77,16 @@ function parseSessionShortcut(text) {
 	return match ? match[1] : null;
 }
 
+function parseDeleteShortcut(text) {
+	const match = (text || '').trim().match(/^\/delete_(ses_[^\s@]+)(?:@\S+)?$/i);
+	return match ? match[1] : null;
+}
+
+function parseSwitchShortcut(text) {
+	const match = (text || '').trim().match(/^\/switch_(ses_[^\s@]+)(?:@\S+)?$/i);
+	return match ? match[1] : null;
+}
+
 async function buildStatusText(chatId) {
 	const sessionId = await sessionStore.ensureSession(chatId);
 	const record = await sessionStore.listSessions(chatId);
@@ -183,7 +193,7 @@ bot.command('sessions', async ctx => {
 		for (const item of sessions.slice(0, 20)) {
 			const active = item.id === activeSessionId ? '* ' : '';
 			const name = namesById.get(item.id) || item.title || 'sin nombre';
-			await bot.telegram.sendMessage(chatId, `${active}${name}\n/${item.id}`);
+			await bot.telegram.sendMessage(chatId, `${active}${name}\n/${item.id}\n/delete_${item.id}`);
 		}
 	});
 });
@@ -286,6 +296,27 @@ bot.on('text', async ctx => {
 		const handledDecision = await promptService.handleDecisionReply(chatId, prompt);
 		if (handledDecision) return;
 
+		const deleteId = parseDeleteShortcut(prompt);
+		if (deleteId) {
+			if (!(await authService.authorizeRequest(ctx))) return;
+			promptService.clearPending(chatId);
+			await client.session.delete({ path: { id: deleteId } });
+			await sessionStore.removeSession(chatId, deleteId);
+			await ctx.reply(`Sesión eliminada: ${deleteId}`);
+			return;
+		}
+
+		const switchId = parseSwitchShortcut(prompt);
+		if (switchId) {
+			if (!(await authService.authorizeRequest(ctx))) return;
+			promptService.clearPending(chatId);
+			await withChatLock(chatId, async () => {
+				const active = await sessionStore.switchSession(chatId, switchId);
+				await ctx.reply(`Sesión activa actualizada: ${active}`);
+			});
+			return;
+		}
+
 		const sessionIdFromShortcut = parseSessionShortcut(prompt);
 		if (sessionIdFromShortcut) {
 			if (!(await authService.authorizeRequest(ctx))) return;
@@ -302,6 +333,10 @@ bot.on('text', async ctx => {
 	}
 
 	if (promptService.hasPending(chatId)) {
+		if (promptService.isAwaitingOtherInput(chatId)) {
+			const submitted = await promptService.submitOtherInput(chatId, prompt);
+			if (submitted) return;
+		}
 		promptService.clearPending(chatId);
 	}
 	if (!(await authService.authorizeRequest(ctx))) return;
