@@ -4,7 +4,7 @@ Telegram bot that bridges your chats to an OpenCode server. Control coding sessi
 
 > Not affiliated with the SST/OpenCode team.
 
-![screenshot](assets/screenshot.PNG)
+<img src="assets/screenshot.PNG" width="400" />
 
 ## Requirements
 
