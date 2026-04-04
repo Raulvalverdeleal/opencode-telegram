@@ -1,10 +1,16 @@
-import 'dotenv/config';
 import { readFile } from 'node:fs/promises';
 import { Telegraf } from 'telegraf';
 import { createOpencodeClient } from '@opencode-ai/sdk';
 import { createOpencodeClient as createOpencodeClientV2 } from '@opencode-ai/sdk/v2';
 import { Buffer } from 'node:buffer';
-import {
+import { loadConfig } from './src/config.mjs';
+import { logError, logInfo, nowIso } from './src/logger.mjs';
+import { withChatLock } from './src/chat-locks.mjs';
+import { createSessionStore } from './src/session-store.mjs';
+import { createAuthService } from './src/auth.mjs';
+import { createPromptService } from './src/prompt-service.mjs';
+
+const {
 	AUTH_MODE,
 	BASE_URL,
 	BOT_TOKEN,
@@ -17,15 +23,7 @@ import {
 	allowedFingerprints,
 	modelConfig,
 	parsedFingerprints,
-	validateRequiredEnv,
-} from './src/config.mjs';
-import { logError, logInfo, nowIso } from './src/logger.mjs';
-import { withChatLock } from './src/chat-locks.mjs';
-import { createSessionStore } from './src/session-store.mjs';
-import { createAuthService } from './src/auth.mjs';
-import { createPromptService } from './src/prompt-service.mjs';
-
-validateRequiredEnv();
+} = await loadConfig();
 
 const botInstructions = await readFile(new URL('./BOT.md', import.meta.url), 'utf8').catch(() => '');
 
@@ -274,7 +272,7 @@ bot.command('fingerprint', async ctx => {
 	await ctx.reply(
 		[
 			`Fingerprint: ${fingerprint}`,
-			'Agrega este valor a TELEGRAM_ALLOWED_FINGERPRINTS en el servidor para autorizar este chat/usuario.',
+			'Agrega este valor a allowedFingerprints en ~/.config/opencode/telegram-bot.json para autorizar este usuario.',
 		].join('\n'),
 	);
 });
@@ -341,7 +339,7 @@ bot.catch(async (err, ctx) => {
 function startupErrorMessage(error) {
 	if (typeof error === 'string') {
 		if (error.toLowerCase().includes('unauthorized')) {
-			return 'Unauthorized: revisa OPENCODE_SERVER_USERNAME y OPENCODE_SERVER_PASSWORD en .env y en opencode serve.';
+			return `Unauthorized: revisa username y password en ~/.config/opencode/telegram-bot.json y en opencode serve.`;
 		}
 		return error;
 	}
@@ -350,10 +348,10 @@ function startupErrorMessage(error) {
 		if (cause && typeof cause === 'object') {
 			const code = cause.code || '';
 			if (code === 'ECONNREFUSED') {
-				return `No hay conexion con OpenCode server en ${BASE_URL}. Arranca: npm run start:opencode`;
+				return `No hay conexion con OpenCode server en ${BASE_URL}.`;
 			}
 			if (code === 'ENOTFOUND') {
-				return `No se puede resolver el host de OPENCODE_BASE_URL (${BASE_URL}). Revisa la URL en .env.`;
+				return `No se puede resolver el host ${BASE_URL}. Revisa baseUrl en ~/.config/opencode/telegram-bot.json.`;
 			}
 			if (code === 'EACCES') {
 				return `No hay permisos para conectar con ${BASE_URL}. Revisa red/firewall y puertos.`;
@@ -363,10 +361,10 @@ function startupErrorMessage(error) {
 			}
 		}
 		if (error.message.toLowerCase().includes('unauthorized')) {
-			return 'Unauthorized: revisa OPENCODE_SERVER_USERNAME y OPENCODE_SERVER_PASSWORD en .env y en opencode serve.';
+			return `Unauthorized: revisa username y password en ~/.config/opencode/telegram-bot.json y en opencode serve.`;
 		}
 		if (error.message === 'fetch failed') {
-			return `Fallo de conexion con OpenCode server (${BASE_URL}). Revisa que este levantado con npm run start:opencode y que usuario/password coincidan.`;
+			return `Fallo de conexion con OpenCode server (${BASE_URL}). Revisa que este levantado y que usuario/password coincidan.`;
 		}
 		return `Error al iniciar: ${error.message}`;
 	}
@@ -379,14 +377,33 @@ function isConnectionError(error) {
 	return code === 'ECONNREFUSED' || code === 'ENOTFOUND' || error.message === 'fetch failed';
 }
 
-async function waitForOpenCode(retries = 10, delayMs = 2000) {
+let opencodeProc = null;
+
+async function spawnOpenCode() {
+	const { spawn } = await import('node:child_process');
+	opencodeProc = spawn('opencode', ['serve'], {
+		cwd: process.cwd(),
+		stdio: 'ignore',
+	});
+	opencodeProc.on('error', error => {
+		logError('opencode.spawn.failed', error);
+	});
+	logInfo('opencode.spawned', { pid: opencodeProc.pid });
+}
+
+async function waitForOpenCode(retries = 15, delayMs = 2000) {
 	for (let i = 1; i <= retries; i++) {
 		try {
 			await client.project.current();
 			return;
 		} catch (error) {
 			if (!isConnectionError(error)) throw error;
-			console.log(`Waiting for OpenCode server... (${i}/${retries})`);
+			if (i === 1) {
+				console.log('OpenCode server not running, starting it...');
+				await spawnOpenCode();
+			} else {
+				console.log(`Waiting for OpenCode server... (${i}/${retries})`);
+			}
 			await new Promise(resolve => setTimeout(resolve, delayMs));
 		}
 	}
@@ -428,5 +445,11 @@ process.on('unhandledRejection', reason => {
 	console.error(`Unhandled rejection: ${text}`);
 });
 
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+process.once('SIGINT', () => {
+	bot.stop('SIGINT');
+	opencodeProc?.kill();
+});
+process.once('SIGTERM', () => {
+	bot.stop('SIGTERM');
+	opencodeProc?.kill();
+});

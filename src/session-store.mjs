@@ -117,22 +117,6 @@ function createSessionStore({ client, storePath, nowIso }) {
 		return record;
 	}
 
-	async function isInstructionsSent(chatId) {
-		const db = await loadStore();
-		const record = normalizeRecord(db[String(chatId)]);
-		return record.instructionsSent;
-	}
-
-	async function markInstructionsSent(chatId) {
-		const db = await loadStore();
-		const key = String(chatId);
-		const record = normalizeRecord(db[key]);
-		record.instructionsSent = true;
-		record.updatedAt = nowIso();
-		db[key] = record;
-		await saveStore(db);
-	}
-
 	async function isVerbose(chatId) {
 		const db = await loadStore();
 		const record = normalizeRecord(db[String(chatId)]);
@@ -228,11 +212,26 @@ function createSessionStore({ client, storePath, nowIso }) {
 		return null;
 	}
 
+	async function isInstructionsSent(chatId) {
+		const db = await loadStore();
+		return normalizeRecord(db[String(chatId)]).instructionsSent;
+	}
+
+	async function markInstructionsSent(chatId) {
+		const db = await loadStore();
+		const key = String(chatId);
+		const record = normalizeRecord(db[key]);
+		record.instructionsSent = true;
+		record.updatedAt = nowIso();
+		db[key] = record;
+		await saveStore(db);
+	}
+
 	return {
 		ensureSession,
 		findChatIdBySession,
-		isVerbose,
 		isInstructionsSent,
+		isVerbose,
 		listChatIds,
 		listSessions,
 		markInstructionsSent,
