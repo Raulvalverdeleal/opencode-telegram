@@ -25,14 +25,21 @@ Create `~/.config/opencode/telegram-bot.json`:
 }
 ```
 
-Run the bot from your project directory:
+Run both processes from your project directory:
 
 ```bash
 npm install
-npm run start:telegram
+npm start
 ```
 
-OpenCode server starts automatically if it is not already running.
+Or run them separately in two terminals:
+
+```bash
+npm run start:opencode   # terminal 1
+npm run start:telegram   # terminal 2
+```
+
+To restart, stop the process (`Ctrl+C`) and run it again.
 
 ## Access control
 
@@ -79,7 +86,7 @@ To find your fingerprint, set `["*"]` and send `/fingerprint` to the bot. Then s
 - `/switch <session_id>` — switch active session
 - `/<session_id>` — shortcut to switch session (e.g. `/ses_abc123`)
 - `/delete <session_id>` — delete a session
-- `/restart` — restart the bot via PM2 and send status on startup
+- `/restart` — exit the bot process (use your process manager or shell to restart it)
 - `/fingerprint` — show your Telegram user ID for allowlist setup
 - `/help` — show command list
 
@@ -87,13 +94,3 @@ To find your fingerprint, set `["*"]` and send `/fingerprint` to the bot. Then s
 
 The bot uses SSE as the primary channel for progress updates. With `verbose` ON (default), it sends traces during execution: session status, tool calls with input summaries, step events, and retries.
 
-## PM2
-
-```bash
-npm run pm2:up               # start both processes
-npm run pm2:restart          # restart both
-npm run pm2:restart:telegram # restart bot only
-npm run pm2:restart:opencode # restart OpenCode only
-npm run pm2:down             # stop both
-npm run pm2:logs             # tail logs
-```

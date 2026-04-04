@@ -251,15 +251,8 @@ bot.command('stop', async ctx => {
 
 bot.command('restart', async ctx => {
 	if (!(await authService.authorizeRequest(ctx))) return;
-	const chatId = ctx.chat.id;
 	await ctx.reply('Reiniciando...');
-	const { exec } = await import('node:child_process');
-	setTimeout(() => {
-		exec('npm run pm2:restart', { cwd: new URL('.', import.meta.url).pathname }, async error => {
-			if (!error) return;
-			await bot.telegram.sendMessage(chatId, `Error al reiniciar: ${error.message}`);
-		});
-	}, 500);
+	setTimeout(() => process.exit(0), 500);
 });
 
 bot.command('fingerprint', async ctx => {
