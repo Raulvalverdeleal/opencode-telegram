@@ -12,7 +12,7 @@
 		"test": "node --test test/*.test.mjs",
 		"pm2:start:telegram": "pm2 start index.mjs --name telegram",
 		"pm2:start:opencode": "pm2 start opencode.mjs --name opencode",
-		"pm2:up": "npm run pm2:start:telegram && npm run pm2:start:opencode && pm2 log",
+		"pm2:up": "npm run pm2:start:opencode && npm run pm2:start:telegram && pm2 log",
 		"pm2:logs": "pm2 log",
 		"pm2:restart:telegram": "pm2 restart telegram --update-env",
 		"pm2:restart:opencode": "pm2 restart opencode --update-env",

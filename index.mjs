@@ -381,9 +381,16 @@ let opencodeProc = null;
 
 async function spawnOpenCode() {
 	const { spawn } = await import('node:child_process');
-	opencodeProc = spawn('opencode', ['serve'], {
+	const url = new URL(BASE_URL);
+	const args = ['serve', '--hostname', url.hostname || '127.0.0.1', '--port', url.port || '4096'];
+	opencodeProc = spawn('opencode', args, {
 		cwd: process.cwd(),
 		stdio: 'ignore',
+		env: {
+			...process.env,
+			OPENCODE_SERVER_USERNAME: USERNAME,
+			OPENCODE_SERVER_PASSWORD: PASSWORD,
+		},
 	});
 	opencodeProc.on('error', error => {
 		logError('opencode.spawn.failed', error);
