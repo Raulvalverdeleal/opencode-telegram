@@ -20,12 +20,7 @@ async function loadConfig() {
 		raw = JSON.parse(await readFile(CONFIG_PATH, 'utf8'));
 	} catch (error) {
 		if (error.code === 'ENOENT') {
-			throw new Error(
-				[
-					`Config file not found: ${CONFIG_PATH}`,
-					'Create it with the following structure:',
-				].join('\n'),
-			);
+			throw new Error([`Config file not found: ${CONFIG_PATH}`, 'Create it with the following structure:'].join('\n'));
 		}
 		throw new Error(`Failed to read config ${CONFIG_PATH}: ${error.message}`);
 	}
@@ -35,7 +30,7 @@ async function loadConfig() {
 	const PASSWORD = raw.password;
 	const BASE_URL = raw.baseUrl || 'http://127.0.0.1:4096';
 	const STORE_PATH = join(homedir(), '.local', 'share', 'opencode', 'telegram-sessions.json');
-	const [DEFAULT_PROVIDER_ID, DEFAULT_MODEL_ID] = raw.model ? raw.model.split('/') : ['', '']
+	const [DEFAULT_PROVIDER_ID, DEFAULT_MODEL_ID] = raw.model ? raw.model.split('/') : ['', ''];
 	const POLL_INTERVAL_MS = Number(raw.pollIntervalMs || 1000);
 	const POLL_TIMEOUT_MS = Number(raw.pollTimeoutMs || 60 * 60 * 1000);
 
