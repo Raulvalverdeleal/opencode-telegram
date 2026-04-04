@@ -1,14 +1,15 @@
-import 'dotenv/config';
 import { spawn } from 'node:child_process';
+import { loadConfig } from './src/config.mjs';
 
-const baseUrl = process.env.OPENCODE_BASE_URL || 'http://127.0.0.1:4096';
-const username = process.env.OPENCODE_SERVER_USERNAME || 'opencode';
-const password = process.env.OPENCODE_SERVER_PASSWORD || '';
-
-if (!password) {
-	console.error('Missing OPENCODE_SERVER_PASSWORD in .env');
+let config;
+try {
+	config = await loadConfig();
+} catch (error) {
+	console.error(error.message);
 	process.exit(1);
 }
+
+const { BASE_URL: baseUrl, USERNAME: username, PASSWORD: password } = config;
 
 let hostname = '127.0.0.1';
 let port = '4096';
@@ -18,7 +19,7 @@ try {
 	hostname = url.hostname || hostname;
 	port = url.port || port;
 } catch {
-	console.error(`Invalid OPENCODE_BASE_URL: ${baseUrl}`);
+	console.error(`Invalid baseUrl in config: ${baseUrl}`);
 	process.exit(1);
 }
 
