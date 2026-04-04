@@ -1,97 +1,99 @@
-# OpenCode Server + Telegram
+# opencode-telegram
 
-MVP con una sesion por chat de Telegram usando OpenCode Server.
+Telegram bot that bridges your chats to an OpenCode server. Control coding sessions from your phone.
 
-## Requisitos
+> Not affiliated with the SST/OpenCode team.
+
+![screenshot](assets/screenshot.PNG)
+
+## Requirements
 
 - Node.js 20+
-- OpenCode instalado y configurado
-- Token de bot de Telegram
+- [OpenCode](https://opencode.ai) installed (`brew install sst/tap/opencode` or equivalent)
+- A Telegram bot token from [@BotFather](https://t.me/BotFather)
 
-## Configuracion
+## Setup
 
-1. Copia `.env.example` a `.env`
-2. Rellena `TELEGRAM_BOT_TOKEN` y `OPENCODE_SERVER_PASSWORD`
+Create `~/.config/opencode/telegram-bot.json`:
 
-### Control de acceso por fingerprint (secure by default)
-
-- El bot usa `TELEGRAM_ALLOWED_FINGERPRINTS` para autorizar llamadas.
-- Fingerprint usado: `chat_id:user_id`.
-- Si `TELEGRAM_ALLOWED_FINGERPRINTS` esta vacio, el bot deniega todo.
-- Si el primer valor es `*`, entra en modo discovery y responde con tu fingerprint para copiarlo al `.env`.
-
-Ejemplos:
-
-```bash
-TELEGRAM_ALLOWED_FINGERPRINTS=*
+```json
+{
+  "botToken": "your-telegram-bot-token",
+  "username": "your-opencode-username",
+  "password": "your-opencode-password",
+  "allowedFingerprints": ["*"]
+}
 ```
 
-Luego, cambia a allowlist estricto:
-
-```bash
-TELEGRAM_ALLOWED_FINGERPRINTS=-1001234567890:99887766,-1001234567890:11223344
-```
-
-## Arranque
-
-En terminal 1, inicia OpenCode server con las credenciales de `.env`:
-
-```bash
-npm run start:opencode
-```
-
-En terminal 2:
+Run the bot from your project directory:
 
 ```bash
 npm install
 npm run start:telegram
 ```
 
-Tambien puedes pasar flags extra al server:
+OpenCode server starts automatically if it is not already running.
 
-```bash
-npm run start:opencode -- --cors http://localhost:5173
+## Access control
+
+The bot uses `allowedFingerprints` to authorize users. A fingerprint is your Telegram user ID.
+
+| Value | Behavior |
+|-------|----------|
+| `[]` or omitted | Deny all (default) |
+| `["*"]` | Discovery mode — replies with your fingerprint, no access granted |
+| `["123456789"]` | Allowlist — only that user ID can interact |
+
+To find your fingerprint, set `["*"]` and send `/fingerprint` to the bot. Then switch to your user ID:
+
+```json
+{
+  "allowedFingerprints": ["123456789"]
+}
 ```
 
-## Comandos
+## Configuration reference
 
-- `/start`: crea o recupera la sesion del chat
-- `/new <nombre_opcional>`: crea una sesion nueva para ese chat
-- `/rename <nombre>`: renombra la sesion activa del chat
-- `/stop`: interrumpe la ejecucion actual del agente para ese chat
-- `/verbose`: alterna trazas de progreso (ON/OFF)
-- `/verbose 1`: activa trazas de progreso
-- `/verbose 0`: desactiva trazas de progreso
-- `/status`: muestra sesion activa, nombre, directorio y estado verbose
-- `/sessions <filtro_opcional>`: lista sesiones y permite filtrar por nombre
-- `/switch <session_id>`: cambia la sesion activa del chat
-- `/<session_id>` (por ejemplo `/ses_abc123`): cambia la sesion activa con acceso directo
-- `/restart`: reinicia solo el bot de Telegram y al volver envia `/status` en ese chat
-- `/fingerprint`: muestra tu fingerprint actual (`chat_id:user_id`)
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `botToken` | yes | — | Telegram bot token |
+| `username` | yes | — | OpenCode server username |
+| `password` | yes | — | OpenCode server password |
+| `allowedFingerprints` | no | `[]` | Array of authorized Telegram user IDs, or `["*"]` for discovery |
+| `baseUrl` | no | `http://127.0.0.1:4096` | OpenCode server URL |
+| `model` | no | OpenCode default | Model in `provider/model` format, e.g. `anthropic/claude-sonnet-4-5` |
+| `storePath` | no | `~/.local/share/opencode/telegram-sessions.json` | Path to session store |
+| `pollIntervalMs` | no | `1000` | Polling interval when SSE is unavailable |
+| `pollTimeoutMs` | no | `3600000` | Max wait time per response |
 
-## Progreso en tiempo real
+## Commands
 
-- El bot usa SSE como canal principal para progreso (`sse-first`).
-- Con `verbose` en ON, envia trazas durante la ejecucion (estado de sesion, tools y pasos).
-- Las trazas de tools incluyen contexto util (por ejemplo comando `bash`, ruta de `read`, patron de `glob`, resumen de `apply_patch`).
-- `/stop` aborta la ejecucion activa de la sesion del chat.
+- `/start` — create or resume the session for this chat
+- `/new <optional_name>` — create a new session
+- `/rename <name>` — rename the current session
+- `/stop` — abort the current execution
+- `/verbose` — toggle progress traces (ON/OFF)
+- `/verbose 1|0` — enable or disable progress traces
+- `/status` — show active session name and verbose state
+- `/sessions <optional_filter>` — list sessions, optionally filtered by name
+- `/switch <session_id>` — switch active session
+- `/<session_id>` — shortcut to switch session (e.g. `/ses_abc123`)
+- `/delete <session_id>` — delete a session
+- `/restart` — restart the bot via PM2 and send status on startup
+- `/fingerprint` — show your Telegram user ID for allowlist setup
+- `/help` — show command list
 
-## Atajos de sesiones
+## Real-time progress
 
-- El listado de `/sessions` muestra cada sesion como:
-  - titulo de sesion
-  - `/<session_id>`
-- En Telegram, al pulsar ese comando se envia solo el comando, por eso el bot acepta `/<session_id>` como alias directo de `/switch <session_id>`.
+The bot uses SSE as the primary channel for progress updates. With `verbose` ON (default), it sends traces during execution: session status, tool calls with input summaries, step events, and retries.
 
-## Notas
+## PM2
 
-- Cada `chat_id` mantiene su propia `session_id`
-- El mapeo se guarda en `chat-sessions.json` con historial por chat
-- `verbose` se guarda por chat en `chat-sessions.json` (por defecto ON)
-- Para fijar modelo por defecto puedes usar `DEFAULT_PROVIDER_ID` y `DEFAULT_MODEL_ID`
-
-## Scripts PM2 utiles
-
-- `npm run pm2:restart:telegram`: reinicia solo el bot de Telegram
-- `npm run pm2:restart:opencode`: reinicia solo OpenCode server
-- `npm run pm2:restart`: reinicia ambos procesos
+```bash
+npm run pm2:up               # start both processes
+npm run pm2:restart          # restart both
+npm run pm2:restart:telegram # restart bot only
+npm run pm2:restart:opencode # restart OpenCode only
+npm run pm2:down             # stop both
+npm run pm2:logs             # tail logs
+```
