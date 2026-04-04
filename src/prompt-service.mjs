@@ -21,6 +21,21 @@ function createPromptService({ bot, client, interactionClient, modelConfig, poll
 		return pendingByChat.has(String(chatId));
 	}
 
+	function isAwaitingOtherInput(chatId) {
+		const pending = getPending(chatId);
+		return pending?.awaitingOtherInput === true;
+	}
+
+	async function submitOtherInput(chatId, text) {
+		const pending = getPending(chatId);
+		const requestId = pending?.requestId;
+		if (!requestId) return false;
+		await interactionClient.question.reply({ requestID: requestId, answers: [[text]] });
+		clearPending(chatId);
+		await bot.telegram.sendMessage(chatId, `Respondido: ${text}`);
+		return true;
+	}
+
 	function getActive(chatId) {
 		return activeByChat.get(String(chatId)) || null;
 	}
@@ -70,16 +85,6 @@ function createPromptService({ bot, client, interactionClient, modelConfig, poll
 		return true;
 	}
 
-	function isDecisionSyntax(text) {
-		return (
-			text === '/allow' ||
-			text === '/reject' ||
-			text === '/always' ||
-			/^\/\d+$/u.test(text) ||
-			/^\/other(?:\s+.+)?$/iu.test(text) ||
-			text === '/other'
-		);
-	}
 	function assistantText(parts) {
 		const text = (parts || [])
 			.filter(part => part?.type === 'text' && typeof part.text === 'string')
@@ -189,27 +194,27 @@ function createPromptService({ bot, client, interactionClient, modelConfig, poll
 	}
 
 	function formatPermissionRequest(request) {
-		const lines = ['Permiso requerido.', `ID: ${request.id}`, `Permiso: ${request.permission}`];
+		const lines = ['Permiso requerido.', `Permiso: ${request.permission}`];
 		if (Array.isArray(request.patterns) && request.patterns.length > 0) {
 			lines.push(`Patrones: ${request.patterns.join(', ')}`);
 		}
-		lines.push('Responde con: /allow /reject /always');
+		lines.push(`Responde con: /allow-${request.id} /reject-${request.id} /always-${request.id}`);
 		return lines.join('\n');
 	}
 
 	function formatQuestionRequest(request) {
 		const first = request.questions?.[0];
 		if (!first) {
-			return ['Pregunta requerida.', `ID: ${request.id}`, 'No se encontraron opciones para responder.'].join('\n');
+			return ['Pregunta requerida.', 'No se encontraron opciones para responder.'].join('\n');
 		}
 
-		const lines = ['Pregunta requerida.', `ID: ${request.id}`];
+		const lines = [];
 		if (first.header) lines.push(first.header);
 		if (first.question) lines.push(first.question);
 		(first.options || []).forEach((option, index) => {
-			lines.push(`${index + 1}) ${option.label}`);
+			lines.push(`/${index + 1} ${option.label}`);
 		});
-		lines.push('Responde con: /1 /2 ... o /other <texto>');
+		lines.push('/other');
 		return lines.join('\n');
 	}
 
@@ -465,81 +470,61 @@ function createPromptService({ bot, client, interactionClient, modelConfig, poll
 
 	async function handleDecisionReply(chatId, text) {
 		const normalized = text.trim();
-		const pending = getPending(chatId);
-
-		if (!pending) {
-			if (!isDecisionSyntax(normalized)) return false;
-			await bot.telegram.sendMessage(chatId, 'No hay una solicitud pendiente.');
-			return true;
-		}
 
 		if (!interactionClient) {
-			clearPending(chatId);
 			await bot.telegram.sendMessage(chatId, 'No se puede responder solicitudes interactivas con esta configuración.');
 			return true;
 		}
 
-		if (pending.type === 'permission') {
-			const permissionReply =
-				normalized === '/allow' ? 'once' : normalized === '/always' ? 'always' : normalized === '/reject' ? 'reject' : null;
-
-			if (!permissionReply) return false;
-
-			await interactionClient.permission.reply({
-				requestID: pending.requestId,
-				reply: permissionReply,
-			});
-			clearPending(chatId);
-			await bot.telegram.sendMessage(chatId, `Permiso respondido: ${normalized}`);
+		const permissionMatch = normalized.match(/^\/(allow|reject|always)-(\S+)$/u);
+		if (permissionMatch) {
+			const action = permissionMatch[1];
+			const requestId = permissionMatch[2];
+			const reply = action === 'allow' ? 'once' : action === 'always' ? 'always' : 'reject';
+			await interactionClient.permission.reply({ requestID: requestId, reply });
+			await bot.telegram.sendMessage(chatId, `Permiso /${action}-${requestId} registrado.`);
 			return true;
 		}
 
-		if (pending.type === 'question') {
-			const question = pending.question;
-			if (!question) {
-				await interactionClient.question.reject({ requestID: pending.requestId });
-				clearPending(chatId);
-				await bot.telegram.sendMessage(chatId, 'Pregunta rechazada: no se pudo leer su formato.');
+		const questionIndexMatch = normalized.match(/^\/(\d+)$/u);
+		if (questionIndexMatch) {
+			const optionIndex = Number(questionIndexMatch[1]);
+			const pending = getPending(chatId);
+			const question = pending?.question;
+			const requestId = pending?.requestId;
+			if (!question || !requestId) {
+				await bot.telegram.sendMessage(chatId, 'No hay una pregunta pendiente.');
 				return true;
 			}
+			const selected = question.options?.[optionIndex - 1];
+			if (!selected) {
+				await bot.telegram.sendMessage(chatId, `Opción inválida. Usa /1, /2, ... según la lista.`);
+				return true;
+			}
+			await interactionClient.question.reply({ requestID: requestId, answers: [[selected.label]] });
+			clearPending(chatId);
+			await bot.telegram.sendMessage(chatId, `Respondido: ${selected.label}`);
+			return true;
+		}
 
-			const indexMatch = normalized.match(/^\/(\d+)$/u);
-			if (indexMatch) {
-				const index = Number(indexMatch[1]);
-				const selected = question.options?.[index - 1];
-				if (!selected) {
-					await bot.telegram.sendMessage(chatId, 'Opción inválida. Usa /1, /2, ... según la lista.');
-					return true;
-				}
-				await interactionClient.question.reply({
-					requestID: pending.requestId,
-					answers: [[selected.label]],
-				});
+		const otherQuestionMatch = normalized.match(/^\/other(?:\s+(.+))?$/iu);
+		if (otherQuestionMatch) {
+			const pending = getPending(chatId);
+			const requestId = pending?.requestId;
+			if (!requestId) {
+				await bot.telegram.sendMessage(chatId, 'No hay una pregunta pendiente.');
+				return true;
+			}
+			const customText = otherQuestionMatch[1]?.trim();
+			if (customText) {
+				await interactionClient.question.reply({ requestID: requestId, answers: [[customText]] });
 				clearPending(chatId);
-				await bot.telegram.sendMessage(chatId, `Pregunta respondida: ${selected.label}`);
-				return true;
+				await bot.telegram.sendMessage(chatId, `Respondido: ${customText}`);
+			} else {
+				setPending(chatId, { ...pending, awaitingOtherInput: true });
+				await bot.telegram.sendMessage(chatId, 'Escribe tu respuesta personalizada:');
 			}
-
-			const otherMatch = normalized.match(/^\/other\s+(.+)$/iu);
-			if (otherMatch) {
-				const customText = otherMatch[1].trim();
-				if (!customText) {
-					await bot.telegram.sendMessage(chatId, 'Uso: /other <texto>');
-					return true;
-				}
-				await interactionClient.question.reply({
-					requestID: pending.requestId,
-					answers: [[customText]],
-				});
-				clearPending(chatId);
-				await bot.telegram.sendMessage(chatId, 'Pregunta respondida con texto libre.');
-				return true;
-			}
-
-			if (normalized === '/other') {
-				await bot.telegram.sendMessage(chatId, 'Uso: /other <texto>');
-				return true;
-			}
+			return true;
 		}
 
 		return false;
@@ -549,10 +534,12 @@ function createPromptService({ bot, client, interactionClient, modelConfig, poll
 		clearPending,
 		handleDecisionReply,
 		hasPending,
+		isAwaitingOtherInput,
 		isStopError,
 		promptWithPolling,
 		replySplit,
 		stopActive,
+		submitOtherInput,
 	};
 }
 

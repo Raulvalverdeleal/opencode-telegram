@@ -98,7 +98,7 @@ test('promptWithPolling waits for idle and returns assistant text', async () => 
 	assert.equal(statusCalls >= 2, true);
 });
 
-test('permission decision commands use pending request for chat', async () => {
+test('permission decision commands use permission ID from command', async () => {
 	const sentMessages = [];
 	const permissionReplies = [];
 
@@ -154,12 +154,12 @@ test('permission decision commands use pending request for chat', async () => {
 	});
 
 	await service.promptWithPolling('session1', 'Need action', 'trace-2', 1001);
-	const handled = await service.handleDecisionReply(1001, '/always');
+	const handled = await service.handleDecisionReply(1001, '/always-perm-1');
 
 	assert.equal(handled, true);
 	assert.deepEqual(permissionReplies, [{ requestID: 'perm-1', reply: 'always' }]);
 	assert.equal(
-		sentMessages.some(item => item.text.includes('Responde con: /allow /reject /always')),
+		sentMessages.some(item => item.text.includes('Responde con: /allow-perm-1 /reject-perm-1 /always-perm-1')),
 		true,
 	);
 });
@@ -232,6 +232,133 @@ test('question decision commands map numeric reply to option label', async () =>
 
 	assert.equal(handled, true);
 	assert.deepEqual(questionReplies, [{ requestID: 'q-1', answers: [['Option B']] }]);
+});
+
+test('other without text enters awaiting state', async () => {
+	const questionReplies = [];
+	const sentMessages = [];
+
+	const client = {
+		session: {
+			messages: async () => ({
+				data: [{ info: { id: 'a-1', role: 'assistant' }, parts: [{ type: 'text', text: 'Done' }] }],
+			}),
+			promptAsync: async () => {},
+			status: async () => ({ data: { session1: { type: 'idle' } } }),
+		},
+	};
+
+	const interactionClient = {
+		permission: { list: async () => ({ data: [] }), reply: async () => {} },
+		question: {
+			list: async () => ({
+				data: [{ id: 'q-1', sessionID: 'session1', questions: [{ question: 'Custom answer?' }] }],
+			}),
+			reply: async input => questionReplies.push(input),
+		},
+	};
+
+	const service = createPromptService({
+		bot: { telegram: { sendMessage: async (_, text) => sentMessages.push({ text }) } },
+		client,
+		interactionClient,
+		modelConfig: () => undefined,
+		pollIntervalMs: 1,
+		pollTimeoutMs: 100,
+		logInfo: () => {},
+	});
+
+	await service.promptWithPolling('session1', 'Need answer', 'trace-4', 3003);
+	const handled = await service.handleDecisionReply(3003, '/other');
+
+	assert.equal(handled, true);
+	assert.equal(questionReplies.length, 0);
+	assert.equal(service.isAwaitingOtherInput(3003), true);
+	assert.ok(sentMessages.some(m => m.text.includes('Escribe tu respuesta')));
+});
+
+test('other with text submits immediately', async () => {
+	const questionReplies = [];
+
+	const client = {
+		session: {
+			messages: async () => ({
+				data: [{ info: { id: 'a-1', role: 'assistant' }, parts: [{ type: 'text', text: 'Done' }] }],
+			}),
+			promptAsync: async () => {},
+			status: async () => ({ data: { session1: { type: 'idle' } } }),
+		},
+	};
+
+	const interactionClient = {
+		permission: { list: async () => ({ data: [] }), reply: async () => {} },
+		question: {
+			list: async () => ({
+				data: [{ id: 'q-1', sessionID: 'session1', questions: [{ question: 'Custom?' }] }],
+			}),
+			reply: async input => questionReplies.push(input),
+		},
+	};
+
+	const service = createPromptService({
+		bot: { telegram: { sendMessage: async () => {} } },
+		client,
+		interactionClient,
+		modelConfig: () => undefined,
+		pollIntervalMs: 1,
+		pollTimeoutMs: 100,
+		logInfo: () => {},
+	});
+
+	await service.promptWithPolling('session1', 'Need answer', 'trace-5', 4004);
+	const handled = await service.handleDecisionReply(4004, '/other My custom answer');
+
+	assert.equal(handled, true);
+	assert.deepEqual(questionReplies, [{ requestID: 'q-1', answers: [['My custom answer']] }]);
+	assert.equal(service.isAwaitingOtherInput(4004), false);
+});
+
+test('submitOtherInput sends custom text as answer', async () => {
+	const questionReplies = [];
+
+	const client = {
+		session: {
+			messages: async () => ({
+				data: [{ info: { id: 'a-1', role: 'assistant' }, parts: [{ type: 'text', text: 'Done' }] }],
+			}),
+			promptAsync: async () => {},
+			status: async () => ({ data: { session1: { type: 'idle' } } }),
+		},
+	};
+
+	const interactionClient = {
+		permission: { list: async () => ({ data: [] }), reply: async () => {} },
+		question: {
+			list: async () => ({
+				data: [{ id: 'q-1', sessionID: 'session1', questions: [{ question: 'Custom?' }] }],
+			}),
+			reply: async input => questionReplies.push(input),
+		},
+	};
+
+	const service = createPromptService({
+		bot: { telegram: { sendMessage: async () => {} } },
+		client,
+		interactionClient,
+		modelConfig: () => undefined,
+		pollIntervalMs: 1,
+		pollTimeoutMs: 100,
+		logInfo: () => {},
+	});
+
+	await service.promptWithPolling('session1', 'Need answer', 'trace-6', 5005);
+	const handled = await service.handleDecisionReply(5005, '/other');
+	assert.equal(handled, true);
+
+	const submitted = await service.submitOtherInput(5005, 'My custom response');
+	assert.equal(submitted, true);
+	assert.deepEqual(questionReplies, [{ requestID: 'q-1', answers: [['My custom response']] }]);
+	assert.equal(service.isAwaitingOtherInput(5005), false);
 });
 
 test('promptWithPolling uses SSE events when interaction client is available', async () => {
