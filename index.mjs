@@ -92,6 +92,25 @@ function parseAgentShortcut(text) {
 	return match ? match[1] : null;
 }
 
+function parseMcpShortcut(text) {
+	const match = (text || '').trim().match(/^\/mcp_(\S+)(?:@\S+)?$/i);
+	return match ? match[1] : null;
+}
+
+function safeMcpName(name) {
+	return String(name || '')
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, '_')
+		.replace(/^_+|_+$/g, '');
+}
+
+function resolveMcpNameFromSafe(safeName, statusByName) {
+	for (const name of Object.keys(statusByName || {})) {
+		if (safeMcpName(name) === safeName) return name;
+	}
+	return null;
+}
+
 async function buildStatusText(chatId) {
 	const sessionId = await sessionStore.ensureSession(chatId);
 	const record = await sessionStore.listSessions(chatId);
@@ -196,9 +215,7 @@ bot.command('agents', async ctx => {
 	if (!(await authService.authorizeRequest(ctx))) return;
 	try {
 		const result = await interactionClient.app.agents();
-		const agents = (result.data || []).filter(
-			a => (a.mode === 'primary' || a.mode === 'all') && !a.hidden,
-		);
+		const agents = (result.data || []).filter(a => (a.mode === 'primary' || a.mode === 'all') && !a.hidden);
 		if (agents.length === 0) {
 			await ctx.reply('No hay agentes principales disponibles.');
 			return;
@@ -214,6 +231,34 @@ bot.command('agents', async ctx => {
 	}
 });
 
+bot.command('mcp', async ctx => {
+	if (!(await authService.authorizeRequest(ctx))) return;
+	const raw = ctx.message.text || '';
+	const queryText = commandArgument(raw, 'mcp');
+	const query = queryText.toLowerCase();
+	try {
+		const result = await interactionClient.mcp.status();
+		const statusByName = result.data || {};
+		const names = Object.keys(statusByName).filter(name => {
+			if (!query) return true;
+			return name.toLowerCase().includes(query);
+		});
+		if (names.length === 0) {
+			await ctx.reply(query ? `No hay MCP para "${queryText}".` : 'No hay MCP disponibles.');
+			return;
+		}
+		const lines = [];
+		for (const name of names) {
+			const safeName = safeMcpName(name);
+			const status = statusByName[name]?.status || 'unknown';
+			lines.push(`/mcp_${safeName} ${status}`);
+		}
+		await ctx.reply(lines.join('\n'));
+	} catch (error) {
+		await ctx.reply(`Error al listar MCP: ${error instanceof Error ? error.message : error}`);
+	}
+});
+
 bot.command('help', async ctx => {
 	await ctx.reply(
 		[
@@ -224,6 +269,7 @@ bot.command('help', async ctx => {
 			'/status — sesión activa, nombre y directorio',
 			'/sessions <filtro_opcional> — sesiones filtradas por nombre',
 			'/agents — listar agentes principales',
+			'/mcp <filtro_opcional> — listar MCP y estado',
 			'/restart — reiniciar bot de Telegram',
 			'/fingerprint — obtener fingerprint de autorización',
 		].join('\n'),
@@ -306,6 +352,32 @@ bot.on('text', async ctx => {
 				});
 				await ctx.reply(`Agente actualizado: ${agentName}`);
 			});
+			return;
+		}
+
+		const mcpSafeName = parseMcpShortcut(prompt);
+		if (mcpSafeName) {
+			if (!(await authService.authorizeRequest(ctx))) return;
+			try {
+				const result = await interactionClient.mcp.status();
+				const statusByName = result.data || {};
+				const mcpName = resolveMcpNameFromSafe(mcpSafeName, statusByName);
+				if (!mcpName) {
+					await ctx.reply(`MCP no encontrado: ${mcpSafeName}`);
+					return;
+				}
+				const currentStatus = statusByName[mcpName]?.status;
+				if (currentStatus === 'connected') {
+					await interactionClient.mcp.disconnect({ name: mcpName });
+				} else {
+					await interactionClient.mcp.connect({ name: mcpName });
+				}
+				const updated = await interactionClient.mcp.status();
+				const newStatus = updated.data?.[mcpName]?.status || 'unknown';
+				await ctx.reply(`/mcp_${mcpSafeName} ${newStatus}`);
+			} catch (error) {
+				await ctx.reply(`Error al cambiar MCP: ${error instanceof Error ? error.message : error}`);
+			}
 			return;
 		}
 
