@@ -63,7 +63,7 @@ To find your fingerprint, set `["*"]` and send `/fingerprint` to the bot. Then s
 | `baseUrl` | no | `http://127.0.0.1:4096` | OpenCode server URL |
 | `model` | no | OpenCode default | Model in `provider/model` format, e.g. `anthropic/claude-sonnet-4-5` |
 | `storePath` | no | `~/.local/share/opencode/telegram-sessions.json` | Path to session store |
-| `pollIntervalMs` | no | `1000` | Polling interval when SSE is unavailable |
+| `pollIntervalMs` | no | `1000` | Polling interval for session status |
 | `pollTimeoutMs` | no | `3600000` | Max wait time per response |
 
 ## Commands
@@ -77,6 +77,8 @@ To find your fingerprint, set `["*"]` and send `/fingerprint` to the bot. Then s
 - `/sessions <optional_filter>` — list sessions, optionally filtered by name
 - `/agents` — list available agents
 - `/mcp <optional_filter>` — list MCP servers and status
+- `/files` — show modified files in the current project
+- `/file_<safe_name>` — show details for a specific file
 - `/s_<session_id>` — switch active session (from /sessions list)
 - `/d_<session_id>` — delete a session
 - `/agent_<name>` — switch to a specific agent
@@ -88,6 +90,10 @@ To find your fingerprint, set `["*"]` and send `/fingerprint` to the bot. Then s
 ## Real-time progress
 
 The bot uses HTTP polling to monitor session status. With `verbose` ON (default), it sends status updates during execution.
+
+## Multiple sessions
+
+Multiple sessions can run concurrently. While one session is processing a prompt, you can switch to another session and run commands (like `/status`) without waiting. Messages from sessions that are not active are queued and delivered when you switch back to them.
 
 ## PM2
 
