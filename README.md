@@ -73,19 +73,22 @@ To find your fingerprint, set `["*"]` and send `/fingerprint` to the bot. Then s
 - `/rename <name>` — rename the current session
 - `/stop` — abort the current execution
 - `/verbose` — toggle progress traces (ON/OFF)
-- `/verbose 1|0` — enable or disable progress traces
-- `/status` — show active session name and verbose state
+- `/status` — show active session
 - `/sessions <optional_filter>` — list sessions, optionally filtered by name
-- `/switch <session_id>` — switch active session
-- `/<session_id>` — shortcut to switch session (e.g. `/ses_abc123`)
-- `/delete <session_id>` — delete a session
+- `/agents` — list available agents
+- `/mcp <optional_filter>` — list MCP servers and status
+- `/s_<session_id>` — switch active session
+- `/ses_<session_id>` — shortcut to switch session
+- `/d_<session_id>` — delete a session
+- `/agent_<name>` — switch to a specific agent
+- `/mcp_<name>` — toggle MCP connection
 - `/restart` — restart the bot via PM2 and send status on startup
 - `/fingerprint` — show your Telegram user ID for allowlist setup
 - `/help` — show command list
 
 ## Real-time progress
 
-The bot uses SSE as the primary channel for progress updates. With `verbose` ON (default), it sends traces during execution: session status, tool calls with input summaries, step events, and retries.
+The bot uses HTTP polling to monitor session status. With `verbose` ON (default), it sends status updates during execution.
 
 ## PM2
 

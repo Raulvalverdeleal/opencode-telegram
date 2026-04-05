@@ -56,10 +56,31 @@ const authService = createAuthService({
 	logInfo,
 	unauthorizedMessage: UNAUTHORIZED_MESSAGE,
 });
+
+async function isSessionActiveForChat(chatId, sessionId) {
+	if (!sessionId) return false;
+	const currentSessionId = await sessionStore.getCurrentSessionId(chatId);
+	return currentSessionId === sessionId;
+}
+
+async function enqueueSessionMessage(chatId, sessionId, text) {
+	await withChatLock(chatId, () => sessionStore.enqueueSessionMessage(chatId, sessionId, text));
+}
+
+async function flushSessionQueue(chatId, sessionId) {
+	const queued = await withChatLock(chatId, () => sessionStore.consumeSessionMessages(chatId, sessionId));
+	for (const item of queued) {
+		await promptService.replySplit(chatId, item.text);
+	}
+	return queued.length;
+}
+
 const promptService = createPromptService({
 	bot,
 	client,
 	interactionClient,
+	enqueueSessionMessage,
+	isSessionActive: isSessionActiveForChat,
 	isVerboseEnabled: chatId => sessionStore.isVerbose(chatId),
 	logInfo,
 	modelConfig,
@@ -115,10 +136,11 @@ async function buildStatusText(chatId) {
 	const sessionId = await sessionStore.ensureSession(chatId);
 	const record = await sessionStore.listSessions(chatId);
 	const verbose = await sessionStore.isVerbose(chatId);
+	const pending = await sessionStore.pendingSessionCount(chatId, sessionId);
 	const savedName = record.sessions.find(item => item.id === sessionId)?.name;
 	const sessionResult = await client.session.get({ path: { id: sessionId } });
 	const sessionName = savedName || sessionResult.data?.title || 'N/A';
-	return [`Session: ${sessionName}`, `Verbose: ${verbose ? 'ON' : 'OFF'}`].join('\n');
+	return [`Session: ${sessionName}`, `Verbose: ${verbose ? 'ON' : 'OFF'}`, `Pendientes: ${pending}`].join('\n');
 }
 
 bot.start(async ctx => {
@@ -140,6 +162,7 @@ bot.command('new', async ctx => {
 	const sessionName = commandArgument(raw, 'new') || null;
 	promptService.clearPending(chatId);
 	const sessionId = await withChatLock(chatId, () => sessionStore.newSession(chatId, sessionName));
+	await promptService.syncPendingForSession(chatId, sessionId);
 	const suffix = sessionName ? `\nNombre: ${sessionName}` : '';
 	await ctx.reply(`Nueva sesión creada: ${sessionId}${suffix}`);
 });
@@ -205,7 +228,9 @@ bot.command('sessions', async ctx => {
 		for (const item of sessions.slice(0, 20)) {
 			const active = item.id === activeSessionId ? '* ' : '';
 			const name = namesById.get(item.id) || item.title || 'sin nombre';
-			lines.push(`${active}${name}\n▶️ /s_${item.id}\n⏹️ /d_${item.id}`);
+			const pendingCount = await sessionStore.pendingSessionCount(chatId, item.id);
+			const pendingSuffix = pendingCount > 0 ? ` (${pendingCount} pendientes)` : '';
+			lines.push(`${active}${name}${pendingSuffix}\n▶️ /s_${item.id}\n⏹️ /d_${item.id}`);
 		}
 		await ctx.reply(lines.join('\n\n'));
 	});
@@ -279,9 +304,10 @@ bot.command('help', async ctx => {
 bot.command('stop', async ctx => {
 	if (!(await authService.authorizeRequest(ctx))) return;
 	const chatId = ctx.chat.id;
-	const stopped = await promptService.stopActive(chatId);
+	const sessionId = await withChatLock(chatId, () => sessionStore.ensureSession(chatId));
+	const stopped = await promptService.stopSession(sessionId);
 	if (!stopped) {
-		await ctx.reply('No hay una ejecución activa en este chat.');
+		await ctx.reply('No hay una ejecución activa en la sesión actual.');
 		return;
 	}
 	await ctx.reply('Ejecución detenida.');
@@ -333,10 +359,13 @@ bot.on('text', async ctx => {
 		if (switchId) {
 			if (!(await authService.authorizeRequest(ctx))) return;
 			promptService.clearPending(chatId);
-			await withChatLock(chatId, async () => {
-				const active = await sessionStore.switchSession(chatId, switchId);
-				await ctx.reply(`Sesión activa actualizada: ${active}`);
-			});
+			const active = await withChatLock(chatId, () => sessionStore.switchSession(chatId, switchId));
+			await ctx.reply(`Sesión activa actualizada: ${active}`);
+			const flushed = await flushSessionQueue(chatId, active);
+			if (flushed > 0) {
+				await ctx.reply(`Entregados ${flushed} mensaje(s) pendientes.`);
+			}
+			await promptService.syncPendingForSession(chatId, active);
 			return;
 		}
 
@@ -385,10 +414,13 @@ bot.on('text', async ctx => {
 		if (sessionIdFromShortcut) {
 			if (!(await authService.authorizeRequest(ctx))) return;
 			promptService.clearPending(chatId);
-			await withChatLock(chatId, async () => {
-				const active = await sessionStore.switchSession(chatId, sessionIdFromShortcut);
-				await ctx.reply(`Sesión activa actualizada: ${active}`);
-			});
+			const active = await withChatLock(chatId, () => sessionStore.switchSession(chatId, sessionIdFromShortcut));
+			await ctx.reply(`Sesión activa actualizada: ${active}`);
+			const flushed = await flushSessionQueue(chatId, active);
+			if (flushed > 0) {
+				await ctx.reply(`Entregados ${flushed} mensaje(s) pendientes.`);
+			}
+			await promptService.syncPendingForSession(chatId, active);
 			return;
 		}
 
@@ -408,26 +440,41 @@ bot.on('text', async ctx => {
 	const traceId = `tg-${chatId}-${Date.now()}`;
 	logInfo('telegram.request.received', { traceId, chatId, promptChars: prompt.length });
 
-	withChatLock(chatId, async () => {
+	let sessionId;
+	let system;
+	await withChatLock(chatId, async () => {
 		logInfo('telegram.lock.acquired', { traceId, chatId });
-		const sessionId = await sessionStore.ensureSession(chatId);
+		sessionId = await sessionStore.ensureSession(chatId);
 		logInfo('telegram.session.ready', { traceId, chatId, sessionId });
 		const sent = await sessionStore.isInstructionsSent(chatId);
-		const system = sent || !botInstructions ? undefined : botInstructions;
+		system = sent || !botInstructions ? undefined : botInstructions;
 		if (system) await sessionStore.markInstructionsSent(chatId);
-		const text = await promptService.promptWithPolling(sessionId, prompt, traceId, chatId, system);
-		logInfo('telegram.reply.sending', { traceId, chatId, chars: text.length });
-		await promptService.replySplit(chatId, text);
-		logInfo('telegram.reply.sent', { traceId, chatId });
-	}).catch(async error => {
-		if (promptService.isStopError(error)) {
-			logInfo('telegram.request.stopped', { traceId, chatId });
-			return;
-		}
-		logError('telegram.request.failed', error, { traceId, chatId });
-		const message = error instanceof Error ? error.message : JSON.stringify(error);
-		await bot.telegram.sendMessage(chatId, `Error: ${message}`);
 	});
+
+	promptService
+		.promptWithPolling(sessionId, prompt, traceId, chatId, system)
+		.then(async text => {
+		logInfo('telegram.reply.sending', { traceId, chatId, chars: text.length });
+		if (await isSessionActiveForChat(chatId, sessionId)) {
+			await promptService.replySplit(chatId, text);
+		} else {
+			await enqueueSessionMessage(chatId, sessionId, text);
+		}
+		logInfo('telegram.reply.sent', { traceId, chatId });
+		})
+		.catch(async error => {
+			if (promptService.isStopError(error)) {
+				logInfo('telegram.request.stopped', { traceId, chatId });
+				return;
+			}
+			logError('telegram.request.failed', error, { traceId, chatId });
+			const message = error instanceof Error ? error.message : JSON.stringify(error);
+			if (await isSessionActiveForChat(chatId, sessionId)) {
+				await bot.telegram.sendMessage(chatId, `Error: ${message}`);
+			} else {
+				await enqueueSessionMessage(chatId, sessionId, `Error: ${message}`);
+			}
+		});
 });
 
 bot.catch(async (err, ctx) => {

@@ -31,11 +31,23 @@ function createSessionStore({ client, storePath, nowIso }) {
 			return acc;
 		}, []);
 		const currentSessionId = raw?.currentSessionId || raw?.sessionId || merged[0]?.id || null;
+		const outboxSource = raw?.outboxBySession && typeof raw.outboxBySession === 'object' ? raw.outboxBySession : {};
+		const outboxBySession = {};
+		for (const [sessionId, messages] of Object.entries(outboxSource)) {
+			if (!sessionId || !Array.isArray(messages)) continue;
+			outboxBySession[sessionId] = messages
+				.filter(item => item && typeof item.text === 'string' && item.text.trim())
+				.map(item => ({
+					text: item.text,
+					createdAt: item.createdAt || nowIso(),
+				}));
+		}
 		return {
 			currentSessionId,
 			instructionsSent: raw?.instructionsSent || false,
 			verbose: raw?.verbose !== false,
 			sessions: merged,
+			outboxBySession,
 			updatedAt: raw?.updatedAt || nowIso(),
 		};
 	}
@@ -111,10 +123,12 @@ function createSessionStore({ client, storePath, nowIso }) {
 	async function listSessions(chatId) {
 		const db = await loadStore();
 		const key = String(chatId);
-		const record = normalizeRecord(db[key]);
-		db[key] = record;
-		await saveStore(db);
-		return record;
+		return normalizeRecord(db[key]);
+	}
+
+	async function getCurrentSessionId(chatId) {
+		const record = await listSessions(chatId);
+		return record.currentSessionId;
 	}
 
 	async function isVerbose(chatId) {
@@ -167,6 +181,41 @@ function createSessionStore({ client, storePath, nowIso }) {
 		db[key] = record;
 		await saveStore(db);
 		return record.currentSessionId;
+	}
+
+	async function enqueueSessionMessage(chatId, sessionId, text, maxPerSession = 100) {
+		if (!sessionId || typeof text !== 'string' || !text.trim()) return;
+		const db = await loadStore();
+		const key = String(chatId);
+		const record = normalizeRecord(db[key]);
+		const current = Array.isArray(record.outboxBySession[sessionId]) ? record.outboxBySession[sessionId] : [];
+		const next = [...current, { text, createdAt: nowIso() }];
+		record.outboxBySession[sessionId] = next.slice(Math.max(next.length - maxPerSession, 0));
+		record.updatedAt = nowIso();
+		db[key] = record;
+		await saveStore(db);
+	}
+
+	async function consumeSessionMessages(chatId, sessionId) {
+		if (!sessionId) return [];
+		const db = await loadStore();
+		const key = String(chatId);
+		const record = normalizeRecord(db[key]);
+		const messages = Array.isArray(record.outboxBySession[sessionId]) ? record.outboxBySession[sessionId] : [];
+		if (messages.length === 0) return [];
+		record.outboxBySession[sessionId] = [];
+		record.updatedAt = nowIso();
+		db[key] = record;
+		await saveStore(db);
+		return messages;
+	}
+
+	async function pendingSessionCount(chatId, sessionId) {
+		if (!sessionId) return 0;
+		const db = await loadStore();
+		const record = normalizeRecord(db[String(chatId)]);
+		const messages = Array.isArray(record.outboxBySession[sessionId]) ? record.outboxBySession[sessionId] : [];
+		return messages.length;
 	}
 
 	async function renameCurrentSession(chatId, sessionName) {
@@ -228,14 +277,18 @@ function createSessionStore({ client, storePath, nowIso }) {
 	}
 
 	return {
+		consumeSessionMessages,
 		ensureSession,
+		enqueueSessionMessage,
 		findChatIdBySession,
+		getCurrentSessionId,
 		isInstructionsSent,
 		isVerbose,
 		listChatIds,
 		listSessions,
 		markInstructionsSent,
 		newSession,
+		pendingSessionCount,
 		renameCurrentSession,
 		removeSession,
 		setVerbose,

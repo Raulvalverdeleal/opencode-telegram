@@ -1,7 +1,20 @@
-function createPromptService({ bot, client, interactionClient, modelConfig, pollIntervalMs, pollTimeoutMs, logInfo, isVerboseEnabled }) {
+function createPromptService({
+	bot,
+	client,
+	interactionClient,
+	modelConfig,
+	pollIntervalMs,
+	pollTimeoutMs,
+	logInfo,
+	isVerboseEnabled,
+	isSessionActive,
+	enqueueSessionMessage,
+}) {
 	const verboseForChat = isVerboseEnabled || (async () => true);
+	const sessionIsActive = isSessionActive || (async () => true);
+	const enqueueForSession = enqueueSessionMessage || (async () => {});
 	const pendingByChat = new Map();
-	const activeByChat = new Map();
+	const activeBySession = new Map();
 	const STOPPED_ERROR_CODE = 'SESSION_STOPPED';
 	const PROGRESS_THROTTLE_MS = 2000;
 
@@ -36,28 +49,30 @@ function createPromptService({ bot, client, interactionClient, modelConfig, poll
 		return true;
 	}
 
-	function getActive(chatId) {
-		return activeByChat.get(String(chatId)) || null;
+	function getActive(sessionId) {
+		if (!sessionId) return null;
+		return activeBySession.get(String(sessionId)) || null;
 	}
 
 	function trackActive(chatId, sessionId) {
-		if (chatId === undefined || chatId === null) return null;
+		if (!sessionId) return null;
 		const active = {
+			chatId,
 			sessionId,
 			controller: new AbortController(),
 			stopped: false,
 			timedOut: false,
 		};
-		activeByChat.set(String(chatId), active);
+		activeBySession.set(String(sessionId), active);
 		return active;
 	}
 
-	function untrackActive(chatId, active) {
-		if (chatId === undefined || chatId === null) return;
-		const key = String(chatId);
-		const current = activeByChat.get(key);
+	function untrackActive(active) {
+		if (!active?.sessionId) return;
+		const key = String(active.sessionId);
+		const current = activeBySession.get(key);
 		if (!active || current === active) {
-			activeByChat.delete(key);
+			activeBySession.delete(key);
 		}
 	}
 
@@ -71,8 +86,8 @@ function createPromptService({ bot, client, interactionClient, modelConfig, poll
 		return error instanceof Error && error.code === STOPPED_ERROR_CODE;
 	}
 
-	async function stopActive(chatId) {
-		const active = getActive(chatId);
+	async function stopSession(sessionId) {
+		const active = getActive(sessionId);
 		if (!active) return false;
 
 		active.stopped = true;
@@ -83,6 +98,21 @@ function createPromptService({ bot, client, interactionClient, modelConfig, poll
 			// Session may already be idle/finished.
 		}
 		return true;
+	}
+
+	async function sendRequired(chatId, sessionId, text) {
+		if (!text) return;
+		if (await sessionIsActive(chatId, sessionId)) {
+			await bot.telegram.sendMessage(chatId, text);
+			return;
+		}
+		await enqueueForSession(chatId, sessionId, text);
+	}
+
+	async function sendIfActive(chatId, sessionId, text) {
+		if (!text) return;
+		if (!(await sessionIsActive(chatId, sessionId))) return;
+		await bot.telegram.sendMessage(chatId, text);
 	}
 
 	function assistantText(parts) {
@@ -230,29 +260,34 @@ function createPromptService({ bot, client, interactionClient, modelConfig, poll
 			const pendingPermission = (permissionResult.data || []).find(item => item?.sessionID === sessionId);
 			const pendingQuestion = (questionResult.data || []).find(item => item?.sessionID === sessionId);
 			const current = getPending(chatId);
+			const activeSession = await sessionIsActive(chatId, sessionId);
 
 			if (pendingPermission) {
-				if (!current || current.requestId !== pendingPermission.id || current.type !== 'permission') {
+				if (activeSession && (!current || current.requestId !== pendingPermission.id || current.type !== 'permission')) {
 					setPending(chatId, {
 						type: 'permission',
 						requestId: pendingPermission.id,
 						sessionId,
 					});
-					await bot.telegram.sendMessage(chatId, formatPermissionRequest(pendingPermission));
+				}
+				if (!current || current.requestId !== pendingPermission.id || current.type !== 'permission') {
+					await sendRequired(chatId, sessionId, formatPermissionRequest(pendingPermission));
 					logInfo('permission.pending', { traceId, chatId, sessionId, requestId: pendingPermission.id });
 				}
 				return;
 			}
 
 			if (pendingQuestion) {
-				if (!current || current.requestId !== pendingQuestion.id || current.type !== 'question') {
+				if (activeSession && (!current || current.requestId !== pendingQuestion.id || current.type !== 'question')) {
 					setPending(chatId, {
 						type: 'question',
 						requestId: pendingQuestion.id,
 						sessionId,
 						question: pendingQuestion.questions?.[0] || null,
 					});
-					await bot.telegram.sendMessage(chatId, formatQuestionRequest(pendingQuestion));
+				}
+				if (!current || current.requestId !== pendingQuestion.id || current.type !== 'question') {
+					await sendRequired(chatId, sessionId, formatQuestionRequest(pendingQuestion));
 					logInfo('question.pending', { traceId, chatId, sessionId, requestId: pendingQuestion.id });
 				}
 				return;
@@ -375,19 +410,23 @@ function createPromptService({ bot, client, interactionClient, modelConfig, poll
 				if (!event || typeof event !== 'object') continue;
 
 				if (event?.type === 'permission.asked' && event.properties?.sessionID === sessionId) {
-					setPending(chatId, { type: 'permission', requestId: event.properties.id, sessionId });
-					await bot.telegram.sendMessage(chatId, formatPermissionRequest(event.properties));
+					if (await sessionIsActive(chatId, sessionId)) {
+						setPending(chatId, { type: 'permission', requestId: event.properties.id, sessionId });
+					}
+					await sendRequired(chatId, sessionId, formatPermissionRequest(event.properties));
 					continue;
 				}
 
 				if (event?.type === 'question.asked' && event.properties?.sessionID === sessionId) {
-					setPending(chatId, {
-						type: 'question',
-						requestId: event.properties.id,
-						sessionId,
-						question: event.properties.questions?.[0] || null,
-					});
-					await bot.telegram.sendMessage(chatId, formatQuestionRequest(event.properties));
+					if (await sessionIsActive(chatId, sessionId)) {
+						setPending(chatId, {
+							type: 'question',
+							requestId: event.properties.id,
+							sessionId,
+							question: event.properties.questions?.[0] || null,
+						});
+					}
+					await sendRequired(chatId, sessionId, formatQuestionRequest(event.properties));
 					continue;
 				}
 
@@ -402,7 +441,7 @@ function createPromptService({ bot, client, interactionClient, modelConfig, poll
 				if (!verboseEnabled) continue;
 				const message = formatProgressEvent(event, traceId, progress);
 				if (message) {
-					await bot.telegram.sendMessage(chatId, message);
+					await sendIfActive(chatId, sessionId, message);
 					logInfo('sse.progress.sent', { traceId, sessionId, type: event.type });
 				}
 			}
@@ -464,8 +503,12 @@ function createPromptService({ bot, client, interactionClient, modelConfig, poll
 
 			throw new Error('No se pudo recuperar la respuesta del asistente.');
 		} finally {
-			untrackActive(chatId, active);
+			untrackActive(active);
 		}
+	}
+
+	async function syncPendingForSession(chatId, sessionId, traceId = `pending-${sessionId}-${Date.now()}`) {
+		await syncPendingRequest(chatId, sessionId, traceId);
 	}
 
 	async function handleDecisionReply(chatId, text) {
@@ -538,7 +581,8 @@ function createPromptService({ bot, client, interactionClient, modelConfig, poll
 		isStopError,
 		promptWithPolling,
 		replySplit,
-		stopActive,
+		syncPendingForSession,
+		stopSession,
 		submitOtherInput,
 	};
 }
