@@ -218,9 +218,7 @@ bot.command('agents', async ctx => {
 	if (!(await authService.authorizeRequest(ctx))) return;
 	try {
 		const result = await interactionClient.app.agents();
-		const agents = (result.data || []).filter(
-			a => (a.mode === 'primary' || a.mode === 'all') && !a.hidden,
-		);
+		const agents = (result.data || []).filter(a => (a.mode === 'primary' || a.mode === 'all') && !a.hidden);
 		if (agents.length === 0) {
 			await ctx.reply('No hay agentes principales disponibles.');
 			return;
@@ -352,14 +350,9 @@ bot.on('voice', async ctx => {
 	withChatLock(chatId, async () => {
 		const sessionId = await sessionStore.ensureSession(chatId);
 		const fileLink = await bot.telegram.getFileLink(voice.file_id);
-		const text = await promptService.promptWithPolling(
-			sessionId,
-			null,
-			traceId,
-			chatId,
-			undefined,
-			[{ type: 'file', mime: voice.mime_type || 'audio/ogg', url: fileLink, filename: `voice_${voice.file_unique_id}.oga` }],
-		);
+		const text = await promptService.promptWithPolling(sessionId, null, traceId, chatId, undefined, [
+			{ type: 'file', mime: voice.mime_type || 'audio/ogg', url: fileLink, filename: `voice_${voice.file_unique_id}.oga` },
+		]);
 		if (text?.toLowerCase().includes('does not support audio')) {
 			await bot.telegram.sendMessage(chatId, 'Este modelo no soporta audio. Cambia a un modelo con soporte de audio (ej: Claude).');
 		} else {
@@ -388,14 +381,9 @@ bot.on('audio', async ctx => {
 	withChatLock(chatId, async () => {
 		const sessionId = await sessionStore.ensureSession(chatId);
 		const fileLink = await bot.telegram.getFileLink(audio.file_id);
-		const text = await promptService.promptWithPolling(
-			sessionId,
-			null,
-			traceId,
-			chatId,
-			undefined,
-			[{ type: 'file', mime: audio.mime_type || 'audio/mpeg', url: fileLink, filename: audio.file_name || `audio_${audio.file_unique_id}` }],
-		);
+		const text = await promptService.promptWithPolling(sessionId, null, traceId, chatId, undefined, [
+			{ type: 'file', mime: audio.mime_type || 'audio/mpeg', url: fileLink, filename: audio.file_name || `audio_${audio.file_unique_id}` },
+		]);
 		if (text?.toLowerCase().includes('does not support audio')) {
 			await bot.telegram.sendMessage(chatId, 'Este modelo no soporta audio. Cambia a un modelo con soporte de audio (ej: Claude).');
 		} else {
