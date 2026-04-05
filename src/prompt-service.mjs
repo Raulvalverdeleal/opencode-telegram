@@ -223,13 +223,19 @@ function createPromptService({
 		return anyAssistant[0] || null;
 	}
 
-	function formatPermissionRequest(request) {
+	function formatPermissionRequest(request, requestId) {
 		const lines = ['Permiso requerido.', `Permiso: ${request.permission}`];
 		if (Array.isArray(request.patterns) && request.patterns.length > 0) {
 			lines.push(`Patrones: ${request.patterns.join(', ')}`);
 		}
-		lines.push(`Responde con: /allow_${request.id} /reject_${request.id} /always_${request.id}`);
-		return lines.join('\n');
+		const replyMarkup = {
+			inline_keyboard: [
+				[{ text: 'Allow', callback_data: `allow_${requestId}` }],
+				[{ text: 'Reject', callback_data: `reject_${requestId}` }],
+				[{ text: 'Always', callback_data: `always_${requestId}` }],
+			],
+		};
+		return { text: lines.join('\n'), replyMarkup };
 	}
 
 	function formatQuestionRequest(request) {
@@ -271,7 +277,8 @@ function createPromptService({
 					});
 				}
 				if (!current || current.requestId !== pendingPermission.id || current.type !== 'permission') {
-					await sendRequired(chatId, sessionId, formatPermissionRequest(pendingPermission));
+					const { text, replyMarkup } = formatPermissionRequest(pendingPermission, pendingPermission.id);
+					await bot.telegram.sendMessage(chatId, text, { reply_markup: replyMarkup });
 					logInfo('permission.pending', { traceId, chatId, sessionId, requestId: pendingPermission.id });
 				}
 				return;
@@ -413,7 +420,8 @@ function createPromptService({
 					if (await sessionIsActive(chatId, sessionId)) {
 						setPending(chatId, { type: 'permission', requestId: event.properties.id, sessionId });
 					}
-					await sendRequired(chatId, sessionId, formatPermissionRequest(event.properties));
+					const { text, replyMarkup } = formatPermissionRequest(event.properties, event.properties.id);
+					await bot.telegram.sendMessage(chatId, text, { reply_markup: replyMarkup });
 					continue;
 				}
 
