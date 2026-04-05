@@ -215,9 +215,7 @@ bot.command('agents', async ctx => {
 	if (!(await authService.authorizeRequest(ctx))) return;
 	try {
 		const result = await interactionClient.app.agents();
-		const agents = (result.data || []).filter(
-			a => (a.mode === 'primary' || a.mode === 'all') && !a.hidden,
-		);
+		const agents = (result.data || []).filter(a => (a.mode === 'primary' || a.mode === 'all') && !a.hidden);
 		if (agents.length === 0) {
 			await ctx.reply('No hay agentes principales disponibles.');
 			return;
