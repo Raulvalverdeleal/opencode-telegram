@@ -78,12 +78,17 @@ function parseSessionShortcut(text) {
 }
 
 function parseDeleteShortcut(text) {
-	const match = (text || '').trim().match(/^\/delete_(ses_[^\s@]+)(?:@\S+)?$/i);
+	const match = (text || '').trim().match(/^\/d_(ses_[^\s@]+)(?:@\S+)?$/i);
 	return match ? match[1] : null;
 }
 
 function parseSwitchShortcut(text) {
-	const match = (text || '').trim().match(/^\/switch_(ses_[^\s@]+)(?:@\S+)?$/i);
+	const match = (text || '').trim().match(/^\/s_(ses_[^\s@]+)(?:@\S+)?$/i);
+	return match ? match[1] : null;
+}
+
+function parseAgentShortcut(text) {
+	const match = (text || '').trim().match(/^\/agent_(\S+)(?:@\S+)?$/i);
 	return match ? match[1] : null;
 }
 
@@ -149,22 +154,9 @@ bot.command('status', async ctx => {
 bot.command('verbose', async ctx => {
 	if (!(await authService.authorizeRequest(ctx))) return;
 	const chatId = ctx.chat.id;
-	const raw = ctx.message.text || '';
-	const arg = commandArgument(raw, 'verbose').toLowerCase();
 
 	await withChatLock(chatId, async () => {
-		let enabled;
-		if (!arg) {
-			enabled = await sessionStore.toggleVerbose(chatId);
-		} else if (arg === '1') {
-			enabled = await sessionStore.setVerbose(chatId, true);
-		} else if (arg === '0') {
-			enabled = await sessionStore.setVerbose(chatId, false);
-		} else {
-			await ctx.reply('Uso: /verbose (toggle) | /verbose 1 | /verbose 0');
-			return;
-		}
-
+		const enabled = await sessionStore.toggleVerbose(chatId);
 		await ctx.reply(`Verbose ${enabled ? 'ON' : 'OFF'}`);
 	});
 });
@@ -190,43 +182,36 @@ bot.command('sessions', async ctx => {
 			await ctx.reply(query ? `No hay sesiones para "${queryText}".` : 'No hay sesiones en el servidor.');
 			return;
 		}
+		const lines = [];
 		for (const item of sessions.slice(0, 20)) {
 			const active = item.id === activeSessionId ? '* ' : '';
 			const name = namesById.get(item.id) || item.title || 'sin nombre';
-			await bot.telegram.sendMessage(chatId, `${active}${name}\n/${item.id}\n/delete_${item.id}`);
+			lines.push(`${active}${name}\n▶️ /s_${item.id}\n⏹️ /d_${item.id}`);
 		}
+		await ctx.reply(lines.join('\n\n'));
 	});
 });
 
-bot.command('delete', async ctx => {
+bot.command('agents', async ctx => {
 	if (!(await authService.authorizeRequest(ctx))) return;
-	const raw = ctx.message.text || '';
-	const sessionId = raw.replace(/^\/delete\s+/i, '').trim();
-	if (!sessionId || sessionId.includes(' ')) {
-		await ctx.reply('Uso: /delete <session_id>');
-		return;
+	try {
+		const result = await interactionClient.app.agents();
+		const agents = (result.data || []).filter(
+			a => (a.mode === 'primary' || a.mode === 'all') && !a.hidden,
+		);
+		if (agents.length === 0) {
+			await ctx.reply('No hay agentes principales disponibles.');
+			return;
+		}
+		const lines = ['Agentes principales:'];
+		for (const agent of agents) {
+			const desc = agent.description ? ` - ${agent.description}` : '';
+			lines.push(`/agent_${agent.name}${desc}`);
+		}
+		await ctx.reply(lines.join('\n\n'));
+	} catch (error) {
+		await ctx.reply(`Error al obtener agentes: ${error instanceof Error ? error.message : error}`);
 	}
-	const chatId = ctx.chat.id;
-	promptService.clearPending(chatId);
-	await client.session.delete({ path: { id: sessionId } });
-	await sessionStore.removeSession(chatId, sessionId);
-	await ctx.reply(`Sesión eliminada: ${sessionId}`);
-});
-
-bot.command('switch', async ctx => {
-	if (!(await authService.authorizeRequest(ctx))) return;
-	const raw = ctx.message.text || '';
-	const sessionId = commandArgument(raw, 'switch');
-	if (!sessionId || sessionId.includes(' ') || !sessionId.startsWith('ses_')) {
-		await ctx.reply('Uso: /switch <session_id>');
-		return;
-	}
-	const chatId = ctx.chat.id;
-	promptService.clearPending(chatId);
-	await withChatLock(chatId, async () => {
-		const active = await sessionStore.switchSession(chatId, sessionId);
-		await ctx.reply(`Sesión activa actualizada: ${active}`);
-	});
 });
 
 bot.command('help', async ctx => {
@@ -235,15 +220,12 @@ bot.command('help', async ctx => {
 			'/new <nombre_opcional> — nueva sesión',
 			'/rename <nombre> — renombrar sesión actual',
 			'/stop — interrumpir ejecución actual',
-			'/verbose — toggle de trazas de progreso',
-			'/verbose 1|0 — activar/desactivar trazas',
+			'/verbose — toggle trazas de progreso',
 			'/status — sesión activa, nombre y directorio',
 			'/sessions <filtro_opcional> — sesiones filtradas por nombre',
-			'/switch <session_id> — cambiar sesión activa',
-			'/delete <session_id> — eliminar sesión',
+			'/agents — listar agentes principales',
 			'/restart — reiniciar bot de Telegram',
 			'/fingerprint — obtener fingerprint de autorización',
-			'/help — mostrar esta ayuda',
 		].join('\n'),
 	);
 });
@@ -279,12 +261,7 @@ bot.command('fingerprint', async ctx => {
 		await ctx.reply('No se pudo calcular fingerprint para este update.');
 		return;
 	}
-	await ctx.reply(
-		[
-			`Fingerprint: ${fingerprint}`,
-			'Agrega este valor a allowedFingerprints en ~/.config/opencode/telegram-bot.json para autorizar este usuario.',
-		].join('\n'),
-	);
+	await ctx.reply(fingerprint);
 });
 
 bot.on('text', async ctx => {
@@ -313,6 +290,21 @@ bot.on('text', async ctx => {
 			await withChatLock(chatId, async () => {
 				const active = await sessionStore.switchSession(chatId, switchId);
 				await ctx.reply(`Sesión activa actualizada: ${active}`);
+			});
+			return;
+		}
+
+		const agentName = parseAgentShortcut(prompt);
+		if (agentName) {
+			if (!(await authService.authorizeRequest(ctx))) return;
+			promptService.clearPending(chatId);
+			await withChatLock(chatId, async () => {
+				const sessionId = await sessionStore.ensureSession(chatId);
+				await client.session.prompt({
+					path: { id: sessionId },
+					body: { agent: agentName, parts: [], noReply: true },
+				});
+				await ctx.reply(`Agente actualizado: ${agentName}`);
 			});
 			return;
 		}
