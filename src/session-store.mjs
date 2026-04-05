@@ -48,6 +48,7 @@ function createSessionStore({ client, storePath, nowIso }) {
 			verbose: raw?.verbose !== false,
 			sessions: merged,
 			outboxBySession,
+			agentsBySession: raw?.agentsBySession || {},
 			updatedAt: raw?.updatedAt || nowIso(),
 		};
 	}
@@ -151,6 +152,30 @@ function createSessionStore({ client, storePath, nowIso }) {
 	async function toggleVerbose(chatId) {
 		const current = await isVerbose(chatId);
 		return setVerbose(chatId, !current);
+	}
+
+	async function getCurrentSession(chatId) {
+		const db = await loadStore();
+		const record = normalizeRecord(db[String(chatId)]);
+		return record.currentSessionId;
+	}
+
+	async function getAgent(chatId) {
+		const db = await loadStore();
+		const record = normalizeRecord(db[String(chatId)]);
+		return record.agentsBySession?.[record.currentSessionId] || 'default';
+	}
+
+	async function setAgent(chatId, agent) {
+		const db = await loadStore();
+		const key = String(chatId);
+		const record = normalizeRecord(db[key]);
+		if (!record.agentsBySession) record.agentsBySession = {};
+		record.agentsBySession[record.currentSessionId] = agent;
+		record.updatedAt = nowIso();
+		db[key] = record;
+		await saveStore(db);
+		return agent;
 	}
 
 	async function listChatIds() {
@@ -281,6 +306,8 @@ function createSessionStore({ client, storePath, nowIso }) {
 		ensureSession,
 		enqueueSessionMessage,
 		findChatIdBySession,
+		getAgent,
+		getCurrentSession,
 		getCurrentSessionId,
 		isInstructionsSent,
 		isVerbose,
@@ -291,6 +318,7 @@ function createSessionStore({ client, storePath, nowIso }) {
 		pendingSessionCount,
 		renameCurrentSession,
 		removeSession,
+		setAgent,
 		setVerbose,
 		switchSession,
 		toggleVerbose,

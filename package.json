@@ -16,7 +16,7 @@
 		"pm2:logs": "pm2 log",
 		"pm2:restart:telegram": "pm2 restart telegram --update-env",
 		"pm2:restart:opencode": "pm2 restart opencode --update-env",
-		"pm2:restart": "npm run pm2:restart:telegram && npm run pm2:restart:opencode",
+		"pm2:restart": "npm run pm2:restart:telegram",
 		"pm2:down": "pm2 delete opencode telegram"
 	},
 	"dependencies": {

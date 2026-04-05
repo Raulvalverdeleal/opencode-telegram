@@ -135,12 +135,11 @@ function resolveMcpNameFromSafe(safeName, statusByName) {
 async function buildStatusText(chatId) {
 	const sessionId = await sessionStore.ensureSession(chatId);
 	const record = await sessionStore.listSessions(chatId);
-	const verbose = await sessionStore.isVerbose(chatId);
-	const pending = await sessionStore.pendingSessionCount(chatId, sessionId);
 	const savedName = record.sessions.find(item => item.id === sessionId)?.name;
 	const sessionResult = await client.session.get({ path: { id: sessionId } });
 	const sessionName = savedName || sessionResult.data?.title || 'N/A';
-	return [`Session: ${sessionName}`, `Verbose: ${verbose ? 'ON' : 'OFF'}`, `Pendientes: ${pending}`].join('\n');
+	const agent = await sessionStore.getAgent(chatId);
+	return `Session: ${sessionName}\nAgent: ${agent}`;
 }
 
 bot.start(async ctx => {
@@ -148,11 +147,10 @@ bot.start(async ctx => {
 	const chatId = ctx.chat.id;
 	promptService.clearPending(chatId);
 	const sessionId = await withChatLock(chatId, () => sessionStore.ensureSession(chatId));
-	await ctx.reply(
-		['Listo.', `Este chat usa la sesión: ${sessionId}`, 'Comandos: /new /rename /stop /verbose /status /sessions /<session_id>.'].join(
-			'\n',
-		),
-	);
+	const sessionResult = await client.session.get({ path: { id: sessionId } });
+	const sessionName = sessionResult.data?.title || sessionId;
+	const agent = await sessionStore.getAgent(chatId);
+	await ctx.reply(`Ready.\nSession: ${sessionName}\nAgent: ${agent}`);
 });
 
 bot.command('new', async ctx => {
@@ -163,8 +161,8 @@ bot.command('new', async ctx => {
 	promptService.clearPending(chatId);
 	const sessionId = await withChatLock(chatId, () => sessionStore.newSession(chatId, sessionName));
 	await promptService.syncPendingForSession(chatId, sessionId);
-	const suffix = sessionName ? `\nNombre: ${sessionName}` : '';
-	await ctx.reply(`Nueva sesión creada: ${sessionId}${suffix}`);
+	const suffix = sessionName ? `\nName: ${sessionName}` : '';
+	await ctx.reply(`New session created: ${sessionId}${suffix}`);
 });
 
 bot.command('rename', async ctx => {
@@ -173,14 +171,13 @@ bot.command('rename', async ctx => {
 	const raw = ctx.message.text || '';
 	const sessionName = commandArgument(raw, 'rename');
 	if (!sessionName) {
-		await ctx.reply('Uso: /rename <nuevo_nombre_para_sesion_actual>');
+		await ctx.reply('Usage: /rename <new_name_for_current_session>');
 		return;
 	}
 
-	promptService.clearPending(chatId);
 	await withChatLock(chatId, async () => {
 		const renamed = await sessionStore.renameCurrentSession(chatId, sessionName);
-		await ctx.reply(`Sesión actual renombrada: ${renamed.name}\nID: ${renamed.sessionId}`);
+		await ctx.reply(`Current session renamed: ${renamed.name}\nID: ${renamed.sessionId}`);
 	});
 });
 
@@ -221,16 +218,16 @@ bot.command('sessions', async ctx => {
 			return name.toLowerCase().includes(query);
 		});
 		if (sessions.length === 0) {
-			await ctx.reply(query ? `No hay sesiones para "${queryText}".` : 'No hay sesiones en el servidor.');
+			await ctx.reply(query ? `No sessions for "${queryText}".` : 'No sessions on server.');
 			return;
 		}
 		const lines = [];
 		for (const item of sessions.slice(0, 20)) {
 			const active = item.id === activeSessionId ? '* ' : '';
-			const name = namesById.get(item.id) || item.title || 'sin nombre';
+			const name = namesById.get(item.id) || item.title || 'unnamed';
 			const pendingCount = await sessionStore.pendingSessionCount(chatId, item.id);
-			const pendingSuffix = pendingCount > 0 ? ` (${pendingCount} pendientes)` : '';
-			lines.push(`${active}${name}${pendingSuffix}\n▶️ /s_${item.id}\n⏹️ /d_${item.id}`);
+			const pendingSuffix = pendingCount > 0 ? ` (${pendingCount} pending)` : '';
+			lines.push(`${active}${name}${pendingSuffix}\n/s_${item.id}\n/d_${item.id}`);
 		}
 		await ctx.reply(lines.join('\n\n'));
 	});
@@ -242,17 +239,17 @@ bot.command('agents', async ctx => {
 		const result = await interactionClient.app.agents();
 		const agents = (result.data || []).filter(a => (a.mode === 'primary' || a.mode === 'all') && !a.hidden);
 		if (agents.length === 0) {
-			await ctx.reply('No hay agentes principales disponibles.');
+			await ctx.reply('No main agents available.');
 			return;
 		}
-		const lines = ['Agentes principales:'];
+		const lines = ['Main agents:'];
 		for (const agent of agents) {
 			const desc = agent.description ? ` - ${agent.description}` : '';
 			lines.push(`/agent_${agent.name}${desc}`);
 		}
 		await ctx.reply(lines.join('\n\n'));
 	} catch (error) {
-		await ctx.reply(`Error al obtener agentes: ${error instanceof Error ? error.message : error}`);
+		await ctx.reply(`Error getting agents: ${error instanceof Error ? error.message : error}`);
 	}
 });
 
@@ -269,7 +266,7 @@ bot.command('mcp', async ctx => {
 			return name.toLowerCase().includes(query);
 		});
 		if (names.length === 0) {
-			await ctx.reply(query ? `No hay MCP para "${queryText}".` : 'No hay MCP disponibles.');
+			await ctx.reply(query ? `No MCP for "${queryText}".` : 'No MCP available.');
 			return;
 		}
 		const lines = [];
@@ -280,23 +277,25 @@ bot.command('mcp', async ctx => {
 		}
 		await ctx.reply(lines.join('\n'));
 	} catch (error) {
-		await ctx.reply(`Error al listar MCP: ${error instanceof Error ? error.message : error}`);
+		await ctx.reply(`Error listing MCP: ${error instanceof Error ? error.message : error}`);
 	}
 });
 
 bot.command('help', async ctx => {
 	await ctx.reply(
 		[
-			'/new <nombre_opcional> — nueva sesión',
-			'/rename <nombre> — renombrar sesión actual',
-			'/stop — interrumpir ejecución actual',
-			'/verbose — toggle trazas de progreso',
-			'/status — sesión activa, nombre y directorio',
-			'/sessions <filtro_opcional> — sesiones filtradas por nombre',
-			'/agents — listar agentes principales',
-			'/mcp <filtro_opcional> — listar MCP y estado',
-			'/restart — reiniciar bot de Telegram',
-			'/fingerprint — obtener fingerprint de autorización',
+			'/new <optional_name> — create new session',
+			'/rename <name> — rename current session',
+			'/stop — abort current execution',
+			'/verbose — toggle progress traces',
+			'/status — show active session',
+			'/sessions <optional_filter> — list sessions',
+			'/files — show modified files',
+			'/file_<safe_name> — show file content',
+			'/agents — list available agents',
+			'/mcp <optional_filter> — list MCP servers',
+			'/restart — restart bot',
+			'/fingerprint — get fingerprint for authorization',
 		].join('\n'),
 	);
 });
@@ -307,21 +306,21 @@ bot.command('stop', async ctx => {
 	const sessionId = await withChatLock(chatId, () => sessionStore.ensureSession(chatId));
 	const stopped = await promptService.stopSession(sessionId);
 	if (!stopped) {
-		await ctx.reply('No hay una ejecución activa en la sesión actual.');
+		await ctx.reply('No active execution in current session.');
 		return;
 	}
-	await ctx.reply('Ejecución detenida.');
+	await ctx.reply('Execution stopped.');
 });
 
 bot.command('restart', async ctx => {
 	if (!(await authService.authorizeRequest(ctx))) return;
 	const chatId = ctx.chat.id;
-	await ctx.reply('Reiniciando...');
+	await ctx.reply('Restarting...');
 	const { exec } = await import('node:child_process');
 	setTimeout(() => {
 		exec('npm run pm2:restart', { cwd: new URL('.', import.meta.url).pathname }, async error => {
 			if (!error) return;
-			await bot.telegram.sendMessage(chatId, `Error al reiniciar: ${error.message}`);
+			await bot.telegram.sendMessage(chatId, `Restart error: ${error.message}`);
 		});
 	}, 500);
 });
@@ -351,7 +350,7 @@ bot.on('text', async ctx => {
 			promptService.clearPending(chatId);
 			await client.session.delete({ path: { id: deleteId } });
 			await sessionStore.removeSession(chatId, deleteId);
-			await ctx.reply(`Sesión eliminada: ${deleteId}`);
+			await ctx.reply(`Session deleted: ${deleteId}`);
 			return;
 		}
 
@@ -359,13 +358,12 @@ bot.on('text', async ctx => {
 		if (switchId) {
 			if (!(await authService.authorizeRequest(ctx))) return;
 			promptService.clearPending(chatId);
-			const active = await withChatLock(chatId, () => sessionStore.switchSession(chatId, switchId));
-			await ctx.reply(`Sesión activa actualizada: ${active}`);
-			const flushed = await flushSessionQueue(chatId, active);
-			if (flushed > 0) {
-				await ctx.reply(`Entregados ${flushed} mensaje(s) pendientes.`);
-			}
-			await promptService.syncPendingForSession(chatId, active);
+			await withChatLock(chatId, async () => {
+				const previousSessionId = await sessionStore.getCurrentSession(chatId);
+				const result = await sessionStore.switchSession(chatId, switchId);
+				await promptService.deliverQueuedMessages(chatId, previousSessionId);
+				await ctx.reply(`Active session updated: ${result.sessionId}`);
+			});
 			return;
 		}
 
@@ -379,7 +377,8 @@ bot.on('text', async ctx => {
 					path: { id: sessionId },
 					body: { agent: agentName, parts: [], noReply: true },
 				});
-				await ctx.reply(`Agente actualizado: ${agentName}`);
+				await sessionStore.setAgent(chatId, agentName);
+				await ctx.reply(`Agent updated: ${agentName}`);
 			});
 			return;
 		}
@@ -392,7 +391,7 @@ bot.on('text', async ctx => {
 				const statusByName = result.data || {};
 				const mcpName = resolveMcpNameFromSafe(mcpSafeName, statusByName);
 				if (!mcpName) {
-					await ctx.reply(`MCP no encontrado: ${mcpSafeName}`);
+					await ctx.reply(`MCP not found: ${mcpSafeName}`);
 					return;
 				}
 				const currentStatus = statusByName[mcpName]?.status;
@@ -405,7 +404,7 @@ bot.on('text', async ctx => {
 				const newStatus = updated.data?.[mcpName]?.status || 'unknown';
 				await ctx.reply(`/mcp_${mcpSafeName} ${newStatus}`);
 			} catch (error) {
-				await ctx.reply(`Error al cambiar MCP: ${error instanceof Error ? error.message : error}`);
+				await ctx.reply(`Error changing MCP: ${error instanceof Error ? error.message : error}`);
 			}
 			return;
 		}
@@ -415,10 +414,10 @@ bot.on('text', async ctx => {
 			if (!(await authService.authorizeRequest(ctx))) return;
 			promptService.clearPending(chatId);
 			const active = await withChatLock(chatId, () => sessionStore.switchSession(chatId, sessionIdFromShortcut));
-			await ctx.reply(`Sesión activa actualizada: ${active}`);
+			await ctx.reply(`Active session updated: ${active}`);
 			const flushed = await flushSessionQueue(chatId, active);
 			if (flushed > 0) {
-				await ctx.reply(`Entregados ${flushed} mensaje(s) pendientes.`);
+				await ctx.reply(`Delivered ${flushed} pending message(s).`);
 			}
 			await promptService.syncPendingForSession(chatId, active);
 			return;
@@ -441,18 +440,14 @@ bot.on('text', async ctx => {
 	logInfo('telegram.request.received', { traceId, chatId, promptChars: prompt.length });
 
 	let sessionId;
-	let system;
 	await withChatLock(chatId, async () => {
 		logInfo('telegram.lock.acquired', { traceId, chatId });
 		sessionId = await sessionStore.ensureSession(chatId);
 		logInfo('telegram.session.ready', { traceId, chatId, sessionId });
-		const sent = await sessionStore.isInstructionsSent(chatId);
-		system = sent || !botInstructions ? undefined : botInstructions;
-		if (system) await sessionStore.markInstructionsSent(chatId);
 	});
 
 	promptService
-		.promptWithPolling(sessionId, prompt, traceId, chatId, system)
+		.promptWithPolling(sessionId, prompt, traceId, chatId, botInstructions || undefined)
 		.then(async text => {
 			logInfo('telegram.reply.sending', { traceId, chatId, chars: text.length });
 			if (await isSessionActiveForChat(chatId, sessionId)) {
@@ -494,27 +489,27 @@ function startupErrorMessage(error) {
 		if (cause && typeof cause === 'object') {
 			const code = cause.code || '';
 			if (code === 'ECONNREFUSED') {
-				return `No hay conexion con OpenCode server en ${BASE_URL}.`;
+				return `No connection to OpenCode server at ${BASE_URL}.`;
 			}
 			if (code === 'ENOTFOUND') {
-				return `No se puede resolver el host ${BASE_URL}. Revisa baseUrl en ~/.config/opencode/telegram-bot.json.`;
+				return `Cannot resolve host ${BASE_URL}. Check baseUrl in ~/.config/opencode/telegram-bot.json.`;
 			}
 			if (code === 'EACCES') {
-				return `No hay permisos para conectar con ${BASE_URL}. Revisa red/firewall y puertos.`;
+				return `No permissions to connect to ${BASE_URL}. Check network/firewall and ports.`;
 			}
 			if (cause.message) {
-				return `Fallo de conexion con OpenCode server (${BASE_URL}): ${cause.message}`;
+				return `Connection failed to OpenCode server (${BASE_URL}): ${cause.message}`;
 			}
 		}
 		if (error.message.toLowerCase().includes('unauthorized')) {
-			return `Unauthorized: revisa username y password en ~/.config/opencode/telegram-bot.json y en opencode serve.`;
+			return `Unauthorized: check username and password in ~/.config/opencode/telegram-bot.json and in opencode serve.`;
 		}
 		if (error.message === 'fetch failed') {
-			return `Fallo de conexion con OpenCode server (${BASE_URL}). Revisa que este levantado y que usuario/password coincidan.`;
+			return `Connection failed to OpenCode server (${BASE_URL}). Check it's running and credentials match.`;
 		}
-		return `Error al iniciar: ${error.message}`;
+		return `Startup error: ${error.message}`;
 	}
-	return 'Error desconocido al iniciar';
+	return 'Unknown startup error';
 }
 
 function isConnectionError(error) {

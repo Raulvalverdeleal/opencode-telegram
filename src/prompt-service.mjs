@@ -228,7 +228,7 @@ function createPromptService({
 		if (Array.isArray(request.patterns) && request.patterns.length > 0) {
 			lines.push(`Patrones: ${request.patterns.join(', ')}`);
 		}
-		lines.push(`Responde con: /allow-${request.id} /reject-${request.id} /always-${request.id}`);
+		lines.push(`Responde con: /allow_${request.id} /reject_${request.id} /always_${request.id}`);
 		return lines.join('\n');
 	}
 
