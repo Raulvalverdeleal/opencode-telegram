@@ -421,7 +421,7 @@ function createPromptService({ bot, client, interactionClient, modelConfig, poll
 		}
 	}
 
-	async function promptWithPolling(sessionId, prompt, traceId, chatId, system) {
+	async function promptWithPolling(sessionId, prompt, traceId, chatId, system, fileParts) {
 		const active = trackActive(chatId, sessionId);
 		logInfo('prompt.prepare', { traceId, sessionId });
 		try {
@@ -432,12 +432,22 @@ function createPromptService({ bot, client, interactionClient, modelConfig, poll
 			const knownMessageIds = new Set(before.data.map(item => item.info.id));
 			logInfo('prompt.history.loaded', { traceId, sessionId, knownMessages: knownMessageIds.size });
 
-			logInfo('prompt.async.send', { traceId, sessionId, promptChars: prompt.length });
+			const parts = [];
+			if (fileParts?.length) {
+				parts.push(...fileParts);
+			}
+			if (prompt) {
+				parts.push({ type: 'text', text: prompt });
+			}
+
+			const currentModel = modelConfig();
+
+			logInfo('prompt.async.send', { traceId, sessionId, promptChars: prompt?.length || 0, fileParts: fileParts?.length || 0 });
 			await client.session.promptAsync({
 				path: { id: sessionId },
 				body: {
-					model: modelConfig(),
-					parts: [{ type: 'text', text: prompt }],
+					...(currentModel ? { model: currentModel } : {}),
+					parts,
 					...(system ? { system } : {}),
 				},
 			});

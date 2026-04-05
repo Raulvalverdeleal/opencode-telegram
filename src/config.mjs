@@ -43,8 +43,7 @@ async function loadConfig() {
 	const allowedFingerprints = new Set(parsedFingerprints.filter(item => item !== '*'));
 
 	function modelConfig() {
-		if (!DEFAULT_PROVIDER_ID || !DEFAULT_MODEL_ID) return undefined;
-		return { providerID: DEFAULT_PROVIDER_ID, modelID: DEFAULT_MODEL_ID };
+		return undefined;
 	}
 
 	return {

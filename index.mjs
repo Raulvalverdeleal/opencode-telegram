@@ -92,6 +92,28 @@ function parseAgentShortcut(text) {
 	return match ? match[1] : null;
 }
 
+function parseModelShortcut(text) {
+	const match = (text || '').trim().match(/^\/model_(\S+)(?:@\S+)?$/i);
+	return match ? match[1] : null;
+}
+
+function safeModelId(providerId, modelId) {
+	return `${providerId}_${modelId}`.replace(/\//g, '_').replace(/-/g, '_').replace(/\./g, '_');
+}
+
+function parseModelFromSafe(safeId, providers) {
+	for (const provider of providers || []) {
+		const modelIds = Object.keys(provider.models || {});
+		for (const modelId of modelIds) {
+			const safe = safeModelId(provider.id, modelId);
+			if (safe === safeId) {
+				return `${provider.id}/${modelId}`;
+			}
+		}
+	}
+	return null;
+}
+
 async function buildStatusText(chatId) {
 	const sessionId = await sessionStore.ensureSession(chatId);
 	const record = await sessionStore.listSessions(chatId);
@@ -214,6 +236,58 @@ bot.command('agents', async ctx => {
 	}
 });
 
+bot.command('model', async ctx => {
+	if (!(await authService.authorizeRequest(ctx))) return;
+	const chatId = ctx.chat.id;
+	try {
+		const sessionId = await sessionStore.ensureSession(chatId);
+		const messages = await client.session.messages({ path: { id: sessionId }, query: { limit: 50 } });
+		const assistant = messages.data.findLast(item => item.info?.role === 'assistant');
+		if (!assistant) {
+			await ctx.reply('No hay mensajes del asistente en esta sesión.');
+			return;
+		}
+		const { providerID, modelID } = assistant.info;
+		await ctx.reply(`Modelo actual: ${providerID}/${modelID}`);
+	} catch (error) {
+		await ctx.reply(`Error al obtener modelo: ${error instanceof Error ? error.message : error}`);
+	}
+});
+
+bot.command('models', async ctx => {
+	if (!(await authService.authorizeRequest(ctx))) return;
+	const raw = ctx.message.text || '';
+	const queryText = commandArgument(raw, 'models');
+	const query = queryText.toLowerCase();
+	try {
+		const result = await client.config.providers();
+		const { providers } = result.data || {};
+		if (!providers || providers.length === 0) {
+			await ctx.reply('No hay providers conectados.');
+			return;
+		}
+		const lines = ['Modelos disponibles:'];
+		for (const provider of providers) {
+			const providerId = provider.id;
+			const modelIds = Object.keys(provider.models || {});
+			for (const modelId of modelIds) {
+				if (query && !`${providerId}/${modelId}`.toLowerCase().includes(query)) {
+					continue;
+				}
+				const safe = safeModelId(providerId, modelId);
+				lines.push(`/model_${safe}`);
+			}
+		}
+		if (lines.length === 1) {
+			await ctx.reply(query ? `No hay modelos para "${queryText}".` : 'No hay modelos disponibles.');
+			return;
+		}
+		await ctx.reply(lines.join('\n'));
+	} catch (error) {
+		await ctx.reply(`Error al obtener modelos: ${error instanceof Error ? error.message : error}`);
+	}
+});
+
 bot.command('help', async ctx => {
 	await ctx.reply(
 		[
@@ -224,6 +298,8 @@ bot.command('help', async ctx => {
 			'/status — sesión activa, nombre y directorio',
 			'/sessions <filtro_opcional> — sesiones filtradas por nombre',
 			'/agents — listar agentes principales',
+			'/model — modelo actual',
+			'/models — modelos disponibles',
 			'/restart — reiniciar bot de Telegram',
 			'/fingerprint — obtener fingerprint de autorización',
 		].join('\n'),
@@ -262,6 +338,78 @@ bot.command('fingerprint', async ctx => {
 		return;
 	}
 	await ctx.reply(fingerprint);
+});
+
+bot.on('voice', async ctx => {
+	if (!(await authService.authorizeRequest(ctx))) return;
+	const chatId = ctx.chat.id;
+	const voice = ctx.message.voice;
+	if (!voice) return;
+
+	await ctx.reply('Procesando audio...');
+	const traceId = `tg-${chatId}-${Date.now()}`;
+
+	withChatLock(chatId, async () => {
+		const sessionId = await sessionStore.ensureSession(chatId);
+		const fileLink = await bot.telegram.getFileLink(voice.file_id);
+		const text = await promptService.promptWithPolling(
+			sessionId,
+			null,
+			traceId,
+			chatId,
+			undefined,
+			[{ type: 'file', mime: voice.mime_type || 'audio/ogg', url: fileLink, filename: `voice_${voice.file_unique_id}.oga` }],
+		);
+		if (text?.toLowerCase().includes('does not support audio')) {
+			await bot.telegram.sendMessage(chatId, 'Este modelo no soporta audio. Cambia a un modelo con soporte de audio (ej: Claude).');
+		} else {
+			await promptService.replySplit(chatId, text);
+		}
+	}).catch(async error => {
+		const message = error instanceof Error ? error.message : JSON.stringify(error);
+		logError('audio.voice.error', error, { chatId });
+		if (message.toLowerCase().includes('does not support audio')) {
+			await bot.telegram.sendMessage(chatId, 'Este modelo no soporta audio. Cambia a un modelo con soporte de audio (ej: Claude).');
+		} else {
+			await bot.telegram.sendMessage(chatId, `Error: ${message}`);
+		}
+	});
+});
+
+bot.on('audio', async ctx => {
+	if (!(await authService.authorizeRequest(ctx))) return;
+	const chatId = ctx.chat.id;
+	const audio = ctx.message.audio || ctx.message.voice;
+	if (!audio) return;
+
+	await ctx.reply('Procesando audio...');
+	const traceId = `tg-${chatId}-${Date.now()}`;
+
+	withChatLock(chatId, async () => {
+		const sessionId = await sessionStore.ensureSession(chatId);
+		const fileLink = await bot.telegram.getFileLink(audio.file_id);
+		const text = await promptService.promptWithPolling(
+			sessionId,
+			null,
+			traceId,
+			chatId,
+			undefined,
+			[{ type: 'file', mime: audio.mime_type || 'audio/mpeg', url: fileLink, filename: audio.file_name || `audio_${audio.file_unique_id}` }],
+		);
+		if (text?.toLowerCase().includes('does not support audio')) {
+			await bot.telegram.sendMessage(chatId, 'Este modelo no soporta audio. Cambia a un modelo con soporte de audio (ej: Claude).');
+		} else {
+			await promptService.replySplit(chatId, text);
+		}
+	}).catch(async error => {
+		const message = error instanceof Error ? error.message : JSON.stringify(error);
+		logError('audio.file.error', error, { chatId });
+		if (message.toLowerCase().includes('does not support audio')) {
+			await bot.telegram.sendMessage(chatId, 'Este modelo no soporta audio. Cambia a un modelo con soporte de audio (ej: Claude).');
+		} else {
+			await bot.telegram.sendMessage(chatId, `Error: ${message}`);
+		}
+	});
 });
 
 bot.on('text', async ctx => {
@@ -306,6 +454,25 @@ bot.on('text', async ctx => {
 				});
 				await ctx.reply(`Agente actualizado: ${agentName}`);
 			});
+			return;
+		}
+
+		const modelId = parseModelShortcut(prompt);
+		if (modelId) {
+			if (!(await authService.authorizeRequest(ctx))) return;
+			try {
+				const result = await client.config.providers();
+				const { providers } = result.data || {};
+				const fullModel = parseModelFromSafe(modelId, providers);
+				if (!fullModel) {
+					await ctx.reply(`Modelo no encontrado: ${modelId}`);
+					return;
+				}
+				await client.config.update({ config: { model: fullModel } });
+				await ctx.reply(`Modelo actualizado: ${fullModel}`);
+			} catch (error) {
+				await ctx.reply(`Error al cambiar modelo: ${error instanceof Error ? error.message : error}`);
+			}
 			return;
 		}
 
