@@ -77,8 +77,7 @@ To find your fingerprint, set `["*"]` and send `/fingerprint` to the bot. Then s
 - `/sessions <optional_filter>` — list sessions, optionally filtered by name
 - `/agents` — list available agents
 - `/mcp <optional_filter>` — list MCP servers and status
-- `/s_<session_id>` — switch active session
-- `/ses_<session_id>` — shortcut to switch session
+- `/s_<session_id>` — switch active session (from /sessions list)
 - `/d_<session_id>` — delete a session
 - `/agent_<name>` — switch to a specific agent
 - `/mcp_<name>` — toggle MCP connection

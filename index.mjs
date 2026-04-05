@@ -454,13 +454,13 @@ bot.on('text', async ctx => {
 	promptService
 		.promptWithPolling(sessionId, prompt, traceId, chatId, system)
 		.then(async text => {
-		logInfo('telegram.reply.sending', { traceId, chatId, chars: text.length });
-		if (await isSessionActiveForChat(chatId, sessionId)) {
-			await promptService.replySplit(chatId, text);
-		} else {
-			await enqueueSessionMessage(chatId, sessionId, text);
-		}
-		logInfo('telegram.reply.sent', { traceId, chatId });
+			logInfo('telegram.reply.sending', { traceId, chatId, chars: text.length });
+			if (await isSessionActiveForChat(chatId, sessionId)) {
+				await promptService.replySplit(chatId, text);
+			} else {
+				await enqueueSessionMessage(chatId, sessionId, text);
+			}
+			logInfo('telegram.reply.sent', { traceId, chatId });
 		})
 		.catch(async error => {
 			if (promptService.isStopError(error)) {
