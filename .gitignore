@@ -1,2 +1,2 @@
-.env
 data/chat-sessions.json
+/node_modules
