@@ -113,6 +113,20 @@ function parseAgentShortcut(text) {
 	return match ? match[1] : null;
 }
 
+function parseModelShortcut(text) {
+	const match = (text || '').trim().match(/^\/model_(\S+)(?:@\S+)?$/i);
+	return match ? match[1] : null;
+}
+
+function safeModelName(model) {
+	return String(model || '')
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, '_')
+		.replace(/^_+|_+$/g, '');
+}
+
+const modelMap = new Map();
+
 function parseMcpShortcut(text) {
 	const match = (text || '').trim().match(/^\/mcp_(\S+)(?:@\S+)?$/i);
 	return match ? match[1] : null;
@@ -139,7 +153,10 @@ async function buildStatusText(chatId) {
 	const sessionResult = await client.session.get({ path: { id: sessionId } });
 	const sessionName = savedName || sessionResult.data?.title || 'N/A';
 	const agent = await sessionStore.getAgent(chatId);
-	return `Session: ${sessionName}\nAgent: ${agent}`;
+	const sessionModel = await sessionStore.getModel(chatId);
+	const cfg = modelConfig();
+	const modelText = sessionModel || (cfg ? `${cfg.providerID}/${cfg.modelID}` : 'default');
+	return `Session: ${sessionName}\nAgent: ${agent}\nModel: ${modelText}`;
 }
 
 bot.start(async ctx => {
@@ -253,6 +270,37 @@ bot.command('agents', async ctx => {
 	}
 });
 
+bot.command('models', async ctx => {
+	if (!(await authService.authorizeRequest(ctx))) return;
+	const chatId = ctx.chat.id;
+	const raw = ctx.message.text || '';
+	const query = commandArgument(raw, 'models').toLowerCase();
+	try {
+		const result = await client.provider.list();
+		const connected = new Set(result.data?.connected || []);
+		const providers = (result.data?.all || []).filter(p => connected.has(p.id));
+		const currentModel = await sessionStore.getModel(chatId);
+		const lines = [];
+		for (const provider of providers) {
+			for (const model of Object.values(provider.models || {})) {
+				const original = `${provider.id}/${model.id}`;
+				if (query && !original.toLowerCase().includes(query) && !model.name?.toLowerCase().includes(query)) continue;
+				const safe = safeModelName(original);
+				modelMap.set(safe, original);
+				const active = original === currentModel ? '* ' : '';
+				lines.push(`${active}/model_${safe}`);
+			}
+		}
+		if (lines.length === 0) {
+			await ctx.reply(query ? `No models matching "${query}".` : 'No connected providers with models.');
+			return;
+		}
+		await promptService.replySplit(chatId, lines.join('\n'));
+	} catch (error) {
+		await ctx.reply(`Error listing models: ${error instanceof Error ? error.message : error}`);
+	}
+});
+
 bot.command('mcp', async ctx => {
 	if (!(await authService.authorizeRequest(ctx))) return;
 	const raw = ctx.message.text || '';
@@ -293,6 +341,7 @@ bot.command('help', async ctx => {
 			'/files — show modified files',
 			'/file_<safe_name> — show file content',
 			'/agents — list available agents',
+			'/models <optional_filter> — list available models',
 			'/mcp <optional_filter> — list MCP servers',
 			'/restart — restart bot',
 			'/fingerprint — get fingerprint for authorization',
@@ -409,6 +458,21 @@ bot.on('text', async ctx => {
 			return;
 		}
 
+		const modelSafeName = parseModelShortcut(prompt);
+		if (modelSafeName) {
+			if (!(await authService.authorizeRequest(ctx))) return;
+			const original = modelMap.get(modelSafeName.toLowerCase());
+			if (!original) {
+				await ctx.reply(`Unknown model: ${modelSafeName}. Run /models to refresh the list.`);
+				return;
+			}
+			await withChatLock(chatId, async () => {
+				await sessionStore.setModel(chatId, original);
+				await ctx.reply(`Model updated: ${original}`);
+			});
+			return;
+		}
+
 		const sessionIdFromShortcut = parseSessionShortcut(prompt);
 		if (sessionIdFromShortcut) {
 			if (!(await authService.authorizeRequest(ctx))) return;
@@ -446,8 +510,17 @@ bot.on('text', async ctx => {
 		logInfo('telegram.session.ready', { traceId, chatId, sessionId });
 	});
 
+	const sessionModel = await sessionStore.getModel(chatId);
+	const resolvedModel = (() => {
+		if (sessionModel) {
+			const slash = sessionModel.indexOf('/');
+			if (slash > 0) return { providerID: sessionModel.slice(0, slash), modelID: sessionModel.slice(slash + 1) };
+		}
+		return modelConfig();
+	})();
+
 	promptService
-		.promptWithPolling(sessionId, prompt, traceId, chatId, botInstructions || undefined)
+		.promptWithPolling(sessionId, prompt, traceId, chatId, botInstructions || undefined, resolvedModel)
 		.then(async text => {
 			logInfo('telegram.reply.sending', { traceId, chatId, chars: text.length });
 			if (await isSessionActiveForChat(chatId, sessionId)) {

@@ -49,6 +49,7 @@ function createSessionStore({ client, storePath, nowIso }) {
 			sessions: merged,
 			outboxBySession,
 			agentsBySession: raw?.agentsBySession || {},
+			modelsBySession: raw?.modelsBySession || {},
 			updatedAt: raw?.updatedAt || nowIso(),
 		};
 	}
@@ -176,6 +177,23 @@ function createSessionStore({ client, storePath, nowIso }) {
 		db[key] = record;
 		await saveStore(db);
 		return agent;
+	}
+
+	async function getModel(chatId) {
+		const db = await loadStore();
+		const record = normalizeRecord(db[String(chatId)]);
+		return record.modelsBySession?.[record.currentSessionId] || null;
+	}
+
+	async function setModel(chatId, model) {
+		const db = await loadStore();
+		const key = String(chatId);
+		const record = normalizeRecord(db[key]);
+		record.modelsBySession[record.currentSessionId] = model;
+		record.updatedAt = nowIso();
+		db[key] = record;
+		await saveStore(db);
+		return model;
 	}
 
 	async function listChatIds() {
@@ -307,6 +325,7 @@ function createSessionStore({ client, storePath, nowIso }) {
 		enqueueSessionMessage,
 		findChatIdBySession,
 		getAgent,
+		getModel,
 		getCurrentSession,
 		getCurrentSessionId,
 		isInstructionsSent,
@@ -319,6 +338,7 @@ function createSessionStore({ client, storePath, nowIso }) {
 		renameCurrentSession,
 		removeSession,
 		setAgent,
+		setModel,
 		setVerbose,
 		switchSession,
 		toggleVerbose,

@@ -468,7 +468,7 @@ function createPromptService({
 		}
 	}
 
-	async function promptWithPolling(sessionId, prompt, traceId, chatId, system) {
+	async function promptWithPolling(sessionId, prompt, traceId, chatId, system, model) {
 		const active = trackActive(chatId, sessionId);
 		logInfo('prompt.prepare', { traceId, sessionId });
 		try {
@@ -483,7 +483,7 @@ function createPromptService({
 			await client.session.promptAsync({
 				path: { id: sessionId },
 				body: {
-					model: modelConfig(),
+					model: model || modelConfig(),
 					parts: [{ type: 'text', text: prompt }],
 					...(system ? { system } : {}),
 				},
